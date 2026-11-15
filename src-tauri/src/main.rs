@@ -65,6 +65,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             island::set_expanded,
+            island::set_hit_region,
             media::get_media_state,
             media::media_toggle,
             media::media_next,

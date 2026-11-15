@@ -31,13 +31,17 @@
     pendingShrink: false,
     shrinkTimer: 0,
     peekTimer: 0,
+    emptyPending: false,
+    emptyTimer: 0,
     lastTitle: null,
     // Last sample from the backend. position is in ms as of updatedAt (epoch ms).
     timeline: { position: 0, duration: null, updatedAt: 0, playing: false }
   };
   let timelineTimer = 0;
 
-  // Window resizes run one at a time, in order.
+  // Window resizes and hit-region updates run one at a time, in order.
+  // Only enqueue() reads or reassigns resizeChain. Step callbacks never do, so a
+  // step can't end up waiting on the chain it is part of.
   let resizeChain = Promise.resolve();
 
   function invoke(cmd, args) {
@@ -47,12 +51,56 @@
     return tauri.core.invoke(cmd, args);
   }
 
-  // Resize the native window to match the pill's new size.
-  function resizeWindow(expanded) {
+  function enqueue(step, label) {
     resizeChain = resizeChain
-      .then(() => invoke('set_expanded', { expanded: expanded }))
-      .catch((err) => console.warn('set_expanded failed', err));
+      .then(step)
+      .catch((err) => console.warn(label + ' failed', err));
     return resizeChain;
+  }
+
+  // The native hit region clips the window to the drawn pill, so clicks outside it
+  // reach the windows below. Arguments are computed when the step runs, so queued
+  // calls see the latest state. While the empty capsule is still shrinking, the old
+  // (larger) region is kept.
+  function regionStep() {
+    return invoke('set_hit_region', {
+      expanded: state.expanded,
+      empty: island.classList.contains('is-empty') && !state.emptyPending
+    });
+  }
+
+  function applyRegion() {
+    return enqueue(regionStep, 'set_hit_region');
+  }
+
+  // Resize the native window to match the pill's new size, then its hit region.
+  function resizeWindow(expanded) {
+    return enqueue(() => invoke('set_expanded', { expanded: expanded })
+      .catch((err) => console.warn('set_expanded failed', err))
+      .then(regionStep), 'resize');
+  }
+
+  // Growing the region is immediate. Shrinking to the empty capsule waits until the
+  // pill's height transition ends, so the drawn pill is never clipped.
+  function onEmptyChanged(nowEmpty) {
+    if (nowEmpty && !state.expanded && transitionsEnabled()) {
+      state.emptyPending = true;
+      clearTimeout(state.emptyTimer);
+      state.emptyTimer = setTimeout(settleEmpty, SHRINK_FALLBACK_MS);
+    } else {
+      state.emptyPending = false;
+      clearTimeout(state.emptyTimer);
+      state.emptyTimer = 0;
+      applyRegion();
+    }
+  }
+
+  function settleEmpty() {
+    clearTimeout(state.emptyTimer);
+    state.emptyTimer = 0;
+    if (!state.emptyPending) return;
+    state.emptyPending = false;
+    applyRegion();
   }
 
   function transitionsEnabled() {
@@ -149,6 +197,7 @@
   function onShrinkTransition(event) {
     if (event.target !== island || event.propertyName !== 'height') return;
     shrink();
+    settleEmpty();
   }
   island.addEventListener('transitionend', onShrinkTransition);
   island.addEventListener('transitioncancel', onShrinkTransition);
@@ -183,7 +232,9 @@
     const title = media.title || null;
     const playing = media.playing === true;
 
+    const wasEmpty = island.classList.contains('is-empty');
     island.classList.toggle('is-empty', !title);
+    if (wasEmpty !== !title) onEmptyChanged(!title);
     island.classList.toggle('is-playing', playing);
     setArt(el.miniThumb, el.miniImg, media.artwork);
     setArt(el.thumb, el.img, media.artwork);
@@ -227,6 +278,8 @@
   });
 
   async function start() {
+    // The window starts collapsed and the page starts empty: clip to the capsule now.
+    applyRegion();
     if (!tauri || !tauri.event) {
       render({}, false);
       return;

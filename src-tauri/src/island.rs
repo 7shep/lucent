@@ -9,8 +9,59 @@ pub const LABEL: &str = "island";
 /// Logical sizes (width, height) of the collapsed and expanded pill.
 pub const COLLAPSED: (f64, f64) = (236.0, 40.0);
 pub const EXPANDED: (f64, f64) = (400.0, 150.0);
+/// Logical size of the empty-state capsule (nothing playing). Drawn inside the collapsed window.
+pub const EMPTY: (f64, f64) = (84.0, 24.0);
+/// Corner radii (logical) matching the CSS border-radius of each state.
+const COLLAPSED_RADIUS: f64 = 20.0;
+const EXPANDED_RADIUS: f64 = 28.0;
+const EMPTY_RADIUS: f64 = 12.0;
 /// Gap between the top of the screen and the island, in logical pixels.
 const TOP_OFFSET_LOGICAL: f64 = 8.0;
+
+/// Native hit region in physical pixels, relative to the window's top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitRegion {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub radius: i32,
+}
+
+/// Logical (size, corner radius) of the drawn pill. Expanded wins over empty, as in the CSS.
+pub fn pill_shape(expanded: bool, empty: bool) -> ((f64, f64), f64) {
+    if expanded {
+        (EXPANDED, EXPANDED_RADIUS)
+    } else if empty {
+        (EMPTY, EMPTY_RADIUS)
+    } else {
+        (COLLAPSED, COLLAPSED_RADIUS)
+    }
+}
+
+/// Logical size of the native window. Only the expanded state resizes it.
+fn window_logical(expanded: bool) -> (f64, f64) {
+    if expanded {
+        EXPANDED
+    } else {
+        COLLAPSED
+    }
+}
+
+/// Region for a pill of `pill` logical size, drawn at the top and centred in a window
+/// `window_width_px` physical pixels wide. Everything is scaled by `scale`.
+pub fn hit_region(window_width_px: i32, pill: (f64, f64), radius: f64, scale: f64) -> HitRegion {
+    let width = (pill.0 * scale).round() as i32;
+    let height = (pill.1 * scale).round() as i32;
+    let x = ((f64::from(window_width_px) - f64::from(width)) / 2.0).round() as i32;
+    HitRegion {
+        x,
+        y: 0,
+        width,
+        height,
+        radius: (radius * scale).round() as i32,
+    }
+}
 
 /// A monitor in physical pixels, plus its DPI scale factor.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -153,6 +204,55 @@ pub fn set_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
     place(&app, expanded)
 }
 
+/// Clips the native window to the drawn pill, so clicks outside it reach windows below.
+/// The caller must grow the region before the pill grows, and shrink it only after the
+/// pill has shrunk. Otherwise drawn pixels get clipped.
+#[tauri::command]
+pub fn set_hit_region(app: AppHandle, expanded: bool, empty: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window(LABEL)
+        .ok_or("island window not found")?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let window_px = (window_logical(expanded).0 * scale).round() as i32;
+    let (pill, radius) = pill_shape(expanded, empty);
+    apply_native_region(&window, hit_region(window_px, pill, radius, scale))
+}
+
+#[cfg(windows)]
+fn apply_native_region(window: &WebviewWindow, region: HitRegion) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
+
+    let raw = window.hwnd().map_err(|e| e.to_string())?;
+    // Convert through the raw pointer, so this works whatever `windows` version tauri uses.
+    let hwnd = HWND(raw.0 as isize as *mut core::ffi::c_void);
+    // SAFETY: hwnd is the island window's handle. On success SetWindowRgn takes ownership of
+    // the region, so it is only deleted on failure.
+    unsafe {
+        let rgn = CreateRoundRectRgn(
+            region.x,
+            region.y,
+            region.x + region.width,
+            region.y + region.height,
+            region.radius * 2,
+            region.radius * 2,
+        );
+        if rgn.is_invalid() {
+            return Err("CreateRoundRectRgn failed".into());
+        }
+        if SetWindowRgn(hwnd, Some(rgn), true) == 0 {
+            let _ = DeleteObject(HGDIOBJ(rgn.0));
+            return Err("SetWindowRgn failed".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn apply_native_region(_window: &WebviewWindow, _region: HitRegion) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::island_rect;
@@ -170,5 +270,53 @@ mod tests {
     #[test]
     fn offset_monitor_adds_its_origin() {
         assert_eq!(island_rect(1920, 0, 1920, 1.0, false).0, 2762);
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::{hit_region, pill_shape, HitRegion, COLLAPSED, EMPTY, EXPANDED};
+
+    #[test]
+    fn collapsed_region_matches_pill_at_100_percent() {
+        let r = hit_region(236, COLLAPSED, 20.0, 1.0);
+        assert_eq!(r, HitRegion { x: 0, y: 0, width: 236, height: 40, radius: 20 });
+    }
+
+    #[test]
+    fn collapsed_region_scales_at_200_percent() {
+        let r = hit_region(472, COLLAPSED, 20.0, 2.0);
+        assert_eq!(r, HitRegion { x: 0, y: 0, width: 472, height: 80, radius: 40 });
+    }
+
+    #[test]
+    fn empty_capsule_is_centred_at_100_percent() {
+        let r = hit_region(236, EMPTY, 12.0, 1.0);
+        assert_eq!(r, HitRegion { x: 76, y: 0, width: 84, height: 24, radius: 12 });
+    }
+
+    #[test]
+    fn empty_capsule_is_centred_at_200_percent() {
+        let r = hit_region(472, EMPTY, 12.0, 2.0);
+        assert_eq!(r, HitRegion { x: 152, y: 0, width: 168, height: 48, radius: 24 });
+    }
+
+    #[test]
+    fn expanded_region_fills_window_at_100_percent() {
+        let r = hit_region(400, EXPANDED, 28.0, 1.0);
+        assert_eq!(r, HitRegion { x: 0, y: 0, width: 400, height: 150, radius: 28 });
+    }
+
+    #[test]
+    fn expanded_region_fills_window_at_200_percent() {
+        let r = hit_region(800, EXPANDED, 28.0, 2.0);
+        assert_eq!(r, HitRegion { x: 0, y: 0, width: 800, height: 300, radius: 56 });
+    }
+
+    #[test]
+    fn expanded_wins_over_empty() {
+        assert_eq!(pill_shape(true, true), (EXPANDED, 28.0));
+        assert_eq!(pill_shape(false, true), (EMPTY, 12.0));
+        assert_eq!(pill_shape(false, false), (COLLAPSED, 20.0));
     }
 }
