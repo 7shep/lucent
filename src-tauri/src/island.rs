@@ -212,6 +212,12 @@ mod region_tests {
     }
 
     #[test]
+    fn expanded_region_fills_window_at_100_percent() {
+        let r = hit_region(400, EXPANDED, 28.0, 1.0);
+        assert_eq!(r, HitRegion { x: 0, y: 0, width: 400, height: 150, radius: 28 });
+    }
+
+    #[test]
     fn expanded_region_fills_window_at_200_percent() {
         let r = hit_region(800, EXPANDED, 28.0, 2.0);
         assert_eq!(r, HitRegion { x: 0, y: 0, width: 800, height: 300, radius: 56 });

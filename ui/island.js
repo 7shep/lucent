@@ -40,6 +40,8 @@
   let timelineTimer = 0;
 
   // Window resizes and hit-region updates run one at a time, in order.
+  // Only enqueue() reads or reassigns resizeChain. Step callbacks never do, so a
+  // step can't end up waiting on the chain it is part of.
   let resizeChain = Promise.resolve();
 
   function invoke(cmd, args) {
@@ -49,26 +51,33 @@
     return tauri.core.invoke(cmd, args);
   }
 
-  // The native hit region clips the window to the drawn pill, so clicks outside it
-  // reach the windows below. Read at run time, so queued calls see the latest state.
-  // While the empty capsule is still shrinking, the old (larger) region is kept.
-  function applyRegion() {
+  function enqueue(step, label) {
     resizeChain = resizeChain
-      .then(() => invoke('set_hit_region', {
-        expanded: state.expanded,
-        empty: island.classList.contains('is-empty') && !state.emptyPending
-      }))
-      .catch((err) => console.warn('set_hit_region failed', err));
+      .then(step)
+      .catch((err) => console.warn(label + ' failed', err));
     return resizeChain;
+  }
+
+  // The native hit region clips the window to the drawn pill, so clicks outside it
+  // reach the windows below. Arguments are computed when the step runs, so queued
+  // calls see the latest state. While the empty capsule is still shrinking, the old
+  // (larger) region is kept.
+  function regionStep() {
+    return invoke('set_hit_region', {
+      expanded: state.expanded,
+      empty: island.classList.contains('is-empty') && !state.emptyPending
+    });
+  }
+
+  function applyRegion() {
+    return enqueue(regionStep, 'set_hit_region');
   }
 
   // Resize the native window to match the pill's new size, then its hit region.
   function resizeWindow(expanded) {
-    resizeChain = resizeChain
-      .then(() => invoke('set_expanded', { expanded: expanded }))
+    return enqueue(() => invoke('set_expanded', { expanded: expanded })
       .catch((err) => console.warn('set_expanded failed', err))
-      .then(() => applyRegion());
-    return resizeChain;
+      .then(regionStep), 'resize');
   }
 
   // Growing the region is immediate. Shrinking to the empty capsule waits until the
