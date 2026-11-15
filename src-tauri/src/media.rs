@@ -21,7 +21,7 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
 use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
-use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 use windows_future::{AsyncOperationCompletedHandler, AsyncStatus, IAsyncInfo, IAsyncOperation};
 
 /// Event name the frontend listens for.
@@ -227,7 +227,46 @@ pub fn should_emit(prev: &Option<MediaState>, next: &MediaState) -> bool {
     prev.as_ref() != Some(next)
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Identity of the current track. Artwork is reused while this stays equal.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct TrackKey {
+    pub app: Option<String>,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+}
+
+/// Last artwork read, keyed by track. Play/pause changes reuse it instead of
+/// re-reading and re-encoding the thumbnail.
+#[derive(Default)]
+pub struct ArtworkCache {
+    key: Option<TrackKey>,
+    artwork: Option<String>,
+}
+
+impl ArtworkCache {
+    /// Cached artwork for `key`, or None when a read is needed. A cached None
+    /// is a miss, so artwork that was not ready yet is read again.
+    pub fn lookup(&self, key: &TrackKey) -> Option<String> {
+        if self.key.as_ref() == Some(key) {
+            self.artwork.clone()
+        } else {
+            None
+        }
+    }
+
+    pub fn store(&mut self, key: TrackKey, artwork: Option<String>) {
+        self.key = Some(key);
+        self.artwork = artwork;
+    }
+
+    pub fn clear(&mut self) {
+        self.key = None;
+        self.artwork = None;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Toggle,
     Next,
@@ -238,6 +277,55 @@ enum Msg {
     Command(Command),
     SessionChanged,
     StateChanged,
+    /// Sent once by a one-shot delay thread when a manager request should be retried.
+    RetryManager,
+}
+
+/// Delay before the next session manager retry: 2s, 4s, 8s, ... capped at 60s.
+fn retry_delay(attempt: u32) -> Duration {
+    const BASE_SECS: u64 = 2;
+    const CAP_SECS: u64 = 60;
+    let secs = BASE_SECS
+        .saturating_mul(1u64 << attempt.min(16))
+        .min(CAP_SECS);
+    Duration::from_secs(secs)
+}
+
+/// What the monitor does for one drained batch of queued messages.
+///
+/// Execution order is fixed: `commands` run first, in their original order,
+/// then `reattach`, then `publish`. Commands cause state events anyway, so
+/// publishing once at the end is enough. `publish` is always true when
+/// `reattach` is true, because a re-attach changes the state.
+#[derive(Debug, PartialEq, Eq)]
+struct Plan {
+    commands: Vec<Command>,
+    reattach: bool,
+    publish: bool,
+}
+
+/// Collapses a batch of queued messages into one plan. Commands keep their
+/// order. Any number of `SessionChanged` gives one re-attach. Any number of
+/// `StateChanged` gives one publish. A re-attach implies a publish.
+fn coalesce(batch: Vec<Msg>) -> Plan {
+    let mut plan = Plan {
+        commands: Vec::new(),
+        reattach: false,
+        publish: false,
+    };
+    for msg in batch {
+        match msg {
+            Msg::Command(command) => plan.commands.push(command),
+            Msg::SessionChanged => plan.reattach = true,
+            Msg::StateChanged => plan.publish = true,
+            // Handled by the monitor loop before coalescing.
+            Msg::RetryManager => {}
+        }
+    }
+    if plan.reattach {
+        plan.publish = true;
+    }
+    plan
 }
 
 /// Managed by Tauri: a channel into the monitor thread plus the last state.
@@ -273,7 +361,7 @@ pub fn probe() -> MediaState {
         return MediaState::default();
     };
     match current_session(&manager) {
-        Some(session) => read_session(&session).unwrap_or_default(),
+        Some(session) => read_session(&session, None).unwrap_or_default(),
         None => MediaState::default(),
     }
 }
@@ -302,6 +390,29 @@ pub fn media_prev(media: State<'_, MediaHandle>) {
     media.send(Command::Prev);
 }
 
+/// Initialises a WinRT apartment on a short-lived worker thread and balances
+/// it with RoUninitialize on drop, including early returns and unwinding.
+/// When initialisation fails (for example a mismatched apartment already
+/// exists), nothing is uninitialised.
+struct ApartmentGuard {
+    initialized: bool,
+}
+
+impl ApartmentGuard {
+    fn init() -> Self {
+        let initialized = unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok();
+        Self { initialized }
+    }
+}
+
+impl Drop for ApartmentGuard {
+    fn drop(&mut self) {
+        if self.initialized {
+            unsafe { RoUninitialize() };
+        }
+    }
+}
+
 fn init_apartment() {
     // Already-initialised is reported as an error; that is harmless here.
     let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
@@ -321,6 +432,11 @@ struct Monitor {
     manager: Option<SessionManager>,
     sub: Option<Subscription>,
     emitted: Option<MediaState>,
+    artwork: ArtworkCache,
+    /// Failed manager requests in a row. Reset when the manager is acquired.
+    retry_attempt: u32,
+    /// True while a one-shot RetryManager delay thread is outstanding.
+    retry_pending: bool,
 }
 
 fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>, rx: Receiver<Msg>) {
@@ -333,42 +449,82 @@ fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>,
         manager,
         sub: None,
         emitted: None,
+        artwork: ArtworkCache::default(),
+        retry_attempt: 0,
+        retry_pending: false,
     };
+    if monitor.manager.is_none() {
+        monitor.schedule_retry();
+    }
     monitor.attach_session();
     monitor.publish();
 
-    // Blocks until a handler or a command sends something.
-    for msg in rx {
-        // A failed startup request is retried lazily, on the next message.
-        if monitor.ensure_manager() {
-            monitor.attach_session();
-            monitor.publish();
+    // Blocks until a handler, a command, or the retry timer sends something.
+    // Then drains everything else already queued, so a burst costs one re-read.
+    while let Ok(first) = rx.recv() {
+        let mut batch = vec![first];
+        while let Ok(msg) = rx.try_recv() {
+            batch.push(msg);
         }
-        match msg {
-            Msg::Command(command) => monitor.command(command),
-            Msg::SessionChanged => {
-                monitor.attach_session();
-                monitor.publish();
-            }
-            Msg::StateChanged => monitor.publish(),
+        // A failed manager request is retried only when its backoff timer fires.
+        let mut acquired = false;
+        if batch.iter().any(|msg| matches!(msg, Msg::RetryManager)) {
+            monitor.retry_pending = false;
+            acquired = monitor.ensure_manager();
+        }
+        let plan = coalesce(batch);
+        for command in plan.commands {
+            monitor.command(command);
+        }
+        if plan.reattach || acquired {
+            monitor.attach_session();
+        }
+        if plan.publish || acquired {
+            monitor.publish();
         }
     }
 }
 
 impl Monitor {
-    /// Retries the session manager request when it is missing.
-    /// Returns true when the manager was newly acquired. The manager is only
-    /// ever set from None, so no event token needs removing.
+    /// Retries the session manager request when it is missing. Returns true
+    /// when the manager was newly acquired. On failure, schedules the next
+    /// retry with backoff. The manager is only ever set from None, so no
+    /// event token needs removing.
     fn ensure_manager(&mut self) -> bool {
         if self.manager.is_some() {
             return false;
         }
         self.manager = request_manager_subscribed(&self.tx);
-        self.manager.is_some()
+        if self.manager.is_some() {
+            self.retry_attempt = 0;
+            return true;
+        }
+        self.retry_attempt = self.retry_attempt.saturating_add(1);
+        self.schedule_retry();
+        false
+    }
+
+    /// Schedules one RetryManager message after `retry_delay(retry_attempt)`.
+    /// A no-op while a retry is already pending, so at most one delay thread
+    /// exists at a time. The thread exits after sending its message.
+    fn schedule_retry(&mut self) {
+        if self.retry_pending {
+            return;
+        }
+        let delay = retry_delay(self.retry_attempt);
+        let tx = self.tx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("lucent-media-retry".into())
+            .spawn(move || {
+                std::thread::sleep(delay);
+                let _ = tx.send(Msg::RetryManager);
+            });
+        self.retry_pending = spawned.is_ok();
     }
 
     fn attach_session(&mut self) {
         self.detach_session();
+        self.artwork.clear();
         let Some(manager) = &self.manager else {
             return;
         };
@@ -420,9 +576,9 @@ impl Monitor {
         }
     }
 
-    fn read(&self) -> MediaState {
+    fn read(&mut self) -> MediaState {
         match &self.sub {
-            Some(sub) => read_session(&sub.session).unwrap_or_default(),
+            Some(sub) => read_session(&sub.session, Some(&mut self.artwork)).unwrap_or_default(),
             None => MediaState::default(),
         }
     }
@@ -479,7 +635,8 @@ fn current_session(manager: &SessionManager) -> Option<Session> {
     manager.GetCurrentSession().ok()
 }
 
-fn read_session(session: &Session) -> WinResult<MediaState> {
+/// With a cache, the thumbnail is only read when the track key misses it.
+fn read_session(session: &Session, cache: Option<&mut ArtworkCache>) -> WinResult<MediaState> {
     let props = wait(&session.TryGetMediaPropertiesAsync()?, PROPS_TIMEOUT)
         .ok_or_else(windows::core::Error::empty)?;
     let playing = session.GetPlaybackInfo()?.PlaybackStatus()? == PlaybackStatus::Playing;
@@ -487,20 +644,45 @@ fn read_session(session: &Session) -> WinResult<MediaState> {
         .SourceAppUserModelId()
         .ok()
         .map(|s| s.to_string());
-    let artwork = props
-        .Thumbnail()
-        .ok()
-        .and_then(|thumb| read_thumbnail_with_timeout(&thumb))
-        .and_then(|(mime, bytes)| artwork_data_url(&mime, &bytes));
+    let title = props.Title().ok().map(|s| s.to_string());
+    let artist = props.Artist().ok().map(|s| s.to_string());
+    let album = props.AlbumTitle().ok().map(|s| s.to_string());
+
+    let read_artwork = || {
+        props
+            .Thumbnail()
+            .ok()
+            .and_then(|thumb| read_thumbnail_with_timeout(&thumb))
+            .and_then(|(mime, bytes)| artwork_data_url(&mime, &bytes))
+    };
+    let artwork = match cache {
+        Some(cache) => {
+            let key = TrackKey {
+                app: app.clone(),
+                title: title.clone(),
+                artist: artist.clone(),
+                album: album.clone(),
+            };
+            match cache.lookup(&key) {
+                Some(hit) => Some(hit),
+                None => {
+                    let fresh = read_artwork();
+                    cache.store(key, fresh.clone());
+                    fresh
+                }
+            }
+        }
+        None => read_artwork(),
+    };
 
     let (position_ms, duration_ms, updated_at_ms) = read_timeline(session)
         .map(|(start, end, position, updated)| timeline(start, end, position, updated))
         .unwrap_or((None, None, None));
 
     Ok(MediaState {
-        title: props.Title().ok().map(|s| s.to_string()),
-        artist: props.Artist().ok().map(|s| s.to_string()),
-        album: props.AlbumTitle().ok().map(|s| s.to_string()),
+        title,
+        artist,
+        album,
         playing,
         app,
         artwork,
@@ -528,7 +710,11 @@ fn read_thumbnail_with_timeout(thumb: &IRandomAccessStreamReference) -> Option<(
     let agile = AgileReference::new(thumb).ok()?;
     run_with_timeout(
         move || {
-            init_apartment();
+            // Declared first so it drops last, after every WinRT object.
+            let _apartment = ApartmentGuard::init();
+            // Rebind so the reference drops before the guard, not with the
+            // closure's captures after it.
+            let agile = agile;
             let thumb = agile.resolve().ok()?;
             read_thumbnail(&thumb)
         },
@@ -706,6 +892,172 @@ mod tests {
     fn wait_returns_ready_value() {
         let op = IAsyncOperation::<bool>::ready(Ok(true));
         assert_eq!(wait(&op, Duration::from_millis(200)), Some(true));
+    }
+
+    fn track(title: &str) -> TrackKey {
+        TrackKey {
+            app: Some("Spotify.exe".into()),
+            title: Some(title.into()),
+            artist: Some("Artist".into()),
+            album: Some("Album".into()),
+        }
+    }
+
+    #[test]
+    fn artwork_cache_same_key_hit_reuses() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        assert_eq!(
+            cache.lookup(&track("Song")),
+            Some("data:image/png;base64,AQID".to_string())
+        );
+    }
+
+    #[test]
+    fn artwork_cache_different_title_misses() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        assert_eq!(cache.lookup(&track("Other")), None);
+    }
+
+    #[test]
+    fn artwork_cache_any_key_field_change_misses() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        let other_app = TrackKey {
+            app: Some("Other.exe".into()),
+            ..track("Song")
+        };
+        let other_album = TrackKey {
+            album: None,
+            ..track("Song")
+        };
+        assert_eq!(cache.lookup(&other_app), None);
+        assert_eq!(cache.lookup(&other_album), None);
+    }
+
+    #[test]
+    fn artwork_cache_cached_none_re_reads() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), None);
+        assert_eq!(cache.lookup(&track("Song")), None);
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        assert_eq!(
+            cache.lookup(&track("Song")),
+            Some("data:image/png;base64,AQID".to_string())
+        );
+    }
+
+    #[test]
+    fn artwork_cache_cleared_on_session_change() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        cache.clear();
+        assert_eq!(cache.lookup(&track("Song")), None);
+    }
+
+    #[test]
+    fn coalesce_hundred_state_changes_publish_once_without_reattach() {
+        let batch = (0..100).map(|_| Msg::StateChanged).collect();
+        assert_eq!(
+            coalesce(batch),
+            Plan {
+                commands: vec![],
+                reattach: false,
+                publish: true,
+            }
+        );
+    }
+
+    #[test]
+    fn coalesce_mixed_session_and_state_reattaches_once() {
+        let batch = vec![
+            Msg::StateChanged,
+            Msg::SessionChanged,
+            Msg::StateChanged,
+            Msg::SessionChanged,
+            Msg::SessionChanged,
+        ];
+        assert_eq!(
+            coalesce(batch),
+            Plan {
+                commands: vec![],
+                reattach: true,
+                publish: true,
+            }
+        );
+    }
+
+    #[test]
+    fn coalesce_session_changed_alone_implies_publish() {
+        let plan = coalesce(vec![Msg::SessionChanged]);
+        assert!(plan.reattach);
+        assert!(plan.publish);
+    }
+
+    #[test]
+    fn coalesce_preserves_command_order() {
+        let batch = vec![
+            Msg::Command(Command::Next),
+            Msg::StateChanged,
+            Msg::Command(Command::Toggle),
+            Msg::SessionChanged,
+            Msg::Command(Command::Prev),
+            Msg::Command(Command::Next),
+        ];
+        assert_eq!(
+            coalesce(batch),
+            Plan {
+                commands: vec![Command::Next, Command::Toggle, Command::Prev, Command::Next],
+                reattach: true,
+                publish: true,
+            }
+        );
+    }
+
+    #[test]
+    fn coalesce_single_command_publishes_nothing() {
+        assert_eq!(
+            coalesce(vec![Msg::Command(Command::Toggle)]),
+            Plan {
+                commands: vec![Command::Toggle],
+                reattach: false,
+                publish: false,
+            }
+        );
+    }
+
+    #[test]
+    fn coalesce_empty_batch_does_nothing() {
+        assert_eq!(
+            coalesce(vec![]),
+            Plan {
+                commands: vec![],
+                reattach: false,
+                publish: false,
+            }
+        );
+    }
+
+    #[test]
+    fn retry_delay_first_is_two_seconds() {
+        assert_eq!(retry_delay(0), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn retry_delay_doubles() {
+        assert_eq!(retry_delay(1), Duration::from_secs(4));
+        assert_eq!(retry_delay(2), Duration::from_secs(8));
+        assert_eq!(retry_delay(3), Duration::from_secs(16));
+        assert_eq!(retry_delay(4), Duration::from_secs(32));
+    }
+
+    #[test]
+    fn retry_delay_caps_at_sixty_seconds() {
+        assert_eq!(retry_delay(5), Duration::from_secs(60));
+        assert_eq!(retry_delay(6), Duration::from_secs(60));
+        assert_eq!(retry_delay(1000), Duration::from_secs(60));
+        assert_eq!(retry_delay(u32::MAX), Duration::from_secs(60));
     }
 
     #[test]
