@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
-use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE};
 
 pub const LABEL: &str = "island";
 /// Logical sizes (width, height) of the collapsed and expanded pill.
@@ -185,10 +185,17 @@ pub fn on_scale_changed(app: &AppHandle, scale: f64) {
     }
 }
 
-/// Shows the window without activating it, so it never takes focus from a game.
-fn show_without_activating(window: &WebviewWindow) -> Result<(), String> {
+/// Hides and shows bypass tao on purpose, and must stay paired. tao keeps its own
+/// VISIBLE flag and skips hide() when the flag already says hidden. A raw show never
+/// updates that flag, so mixing raw show with tao's hide() breaks every hide after the
+/// first. tao's flag stays VISIBLE (from show_initial) throughout.
+/// Caveat: if code later changes tao window flags at runtime (always-on-top,
+/// decorations, focusable), tao re-applies SW_SHOW and can unhide the pill.
+fn show_window_raw(window: &WebviewWindow, cmd: SHOW_WINDOW_CMD) -> Result<(), String> {
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+    // SAFETY: hwnd is the island window's live handle. ShowWindow's return value is the
+    // previous visibility, not an error.
+    let _ = unsafe { ShowWindow(hwnd, cmd) };
     Ok(())
 }
 
@@ -253,12 +260,13 @@ pub fn set_target(app: &AppHandle, target: Option<Screen>) -> Result<(), String>
         return Ok(());
     };
     match target {
-        None => window.hide().map_err(|e| e.to_string()),
+        None => show_window_raw(&window, SW_HIDE),
         Some(screen) => {
             let expanded = with_placement(app, |p| p.expanded)?;
             reposition(app, &window, screen, expanded)?;
             if was_hidden {
-                show_without_activating(&window)
+                // Shown without activating, so the pill never takes focus from a game.
+                show_window_raw(&window, SW_SHOWNOACTIVATE)
             } else {
                 Ok(())
             }
