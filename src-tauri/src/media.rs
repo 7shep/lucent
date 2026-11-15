@@ -206,7 +206,7 @@ impl ArtworkCache {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Toggle,
     Next,
@@ -217,6 +217,41 @@ enum Msg {
     Command(Command),
     SessionChanged,
     StateChanged,
+}
+
+/// What the monitor does for one drained batch of queued messages.
+///
+/// Execution order is fixed: `commands` run first, in their original order,
+/// then `reattach`, then `publish`. Commands cause state events anyway, so
+/// publishing once at the end is enough. `publish` is always true when
+/// `reattach` is true, because a re-attach changes the state.
+#[derive(Debug, PartialEq, Eq)]
+struct Plan {
+    commands: Vec<Command>,
+    reattach: bool,
+    publish: bool,
+}
+
+/// Collapses a batch of queued messages into one plan. Commands keep their
+/// order. Any number of `SessionChanged` gives one re-attach. Any number of
+/// `StateChanged` gives one publish. A re-attach implies a publish.
+fn coalesce(batch: Vec<Msg>) -> Plan {
+    let mut plan = Plan {
+        commands: Vec::new(),
+        reattach: false,
+        publish: false,
+    };
+    for msg in batch {
+        match msg {
+            Msg::Command(command) => plan.commands.push(command),
+            Msg::SessionChanged => plan.reattach = true,
+            Msg::StateChanged => plan.publish = true,
+        }
+    }
+    if plan.reattach {
+        plan.publish = true;
+    }
+    plan
 }
 
 /// Managed by Tauri: a channel into the monitor thread plus the last state.
@@ -318,20 +353,27 @@ fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>,
     monitor.attach_session();
     monitor.publish();
 
-    // Blocks until a handler or a command sends something.
-    for msg in rx {
-        // A failed startup request is retried lazily, on the next message.
-        if monitor.ensure_manager() {
-            monitor.attach_session();
-            monitor.publish();
+    // Blocks until a handler or a command sends something. Then drains
+    // everything else already queued, so a burst costs one re-read.
+    while let Ok(first) = rx.recv() {
+        let mut batch = vec![first];
+        while let Ok(msg) = rx.try_recv() {
+            batch.push(msg);
         }
-        match msg {
-            Msg::Command(command) => monitor.command(command),
-            Msg::SessionChanged => {
-                monitor.attach_session();
-                monitor.publish();
-            }
-            Msg::StateChanged => monitor.publish(),
+        // A failed startup request is retried lazily, on the next batch.
+        let acquired = monitor.ensure_manager();
+        if acquired {
+            monitor.attach_session();
+        }
+        let plan = coalesce(batch);
+        for command in plan.commands {
+            monitor.command(command);
+        }
+        if plan.reattach {
+            monitor.attach_session();
+        }
+        if plan.publish || acquired {
+            monitor.publish();
         }
     }
 }
@@ -762,6 +804,89 @@ mod tests {
         cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
         cache.clear();
         assert_eq!(cache.lookup(&track("Song")), None);
+    }
+
+    #[test]
+    fn coalesce_hundred_state_changes_publish_once_without_reattach() {
+        let batch = (0..100).map(|_| Msg::StateChanged).collect();
+        assert_eq!(
+            coalesce(batch),
+            Plan {
+                commands: vec![],
+                reattach: false,
+                publish: true,
+            }
+        );
+    }
+
+    #[test]
+    fn coalesce_mixed_session_and_state_reattaches_once() {
+        let batch = vec![
+            Msg::StateChanged,
+            Msg::SessionChanged,
+            Msg::StateChanged,
+            Msg::SessionChanged,
+            Msg::SessionChanged,
+        ];
+        assert_eq!(
+            coalesce(batch),
+            Plan {
+                commands: vec![],
+                reattach: true,
+                publish: true,
+            }
+        );
+    }
+
+    #[test]
+    fn coalesce_session_changed_alone_implies_publish() {
+        let plan = coalesce(vec![Msg::SessionChanged]);
+        assert!(plan.reattach);
+        assert!(plan.publish);
+    }
+
+    #[test]
+    fn coalesce_preserves_command_order() {
+        let batch = vec![
+            Msg::Command(Command::Next),
+            Msg::StateChanged,
+            Msg::Command(Command::Toggle),
+            Msg::SessionChanged,
+            Msg::Command(Command::Prev),
+            Msg::Command(Command::Next),
+        ];
+        assert_eq!(
+            coalesce(batch),
+            Plan {
+                commands: vec![Command::Next, Command::Toggle, Command::Prev, Command::Next],
+                reattach: true,
+                publish: true,
+            }
+        );
+    }
+
+    #[test]
+    fn coalesce_single_command_publishes_nothing() {
+        assert_eq!(
+            coalesce(vec![Msg::Command(Command::Toggle)]),
+            Plan {
+                commands: vec![Command::Toggle],
+                reattach: false,
+                publish: false,
+            }
+        );
+    }
+
+    #[test]
+    fn coalesce_empty_batch_does_nothing() {
+        assert_eq!(
+            coalesce(vec![]),
+            Plan {
+                commands: vec![],
+                reattach: false,
+                publish: false,
+            }
+        );
     }
 
     #[test]
