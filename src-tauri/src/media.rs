@@ -5,6 +5,7 @@
 //! when the current session changes, and emits `media://update` on change.
 //! The thread blocks on the channel, so there is no polling.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,7 +13,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use windows::core::{Interface, Result as WinResult, RuntimeType};
+use windows::core::{AgileReference, Interface, Result as WinResult, RuntimeType};
 use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as Session,
@@ -20,7 +21,7 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
 use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
-use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 use windows_future::{AsyncOperationCompletedHandler, AsyncStatus, IAsyncInfo, IAsyncOperation};
 
 /// Event name the frontend listens for.
@@ -36,6 +37,16 @@ const MAX_TEXT_CHARS: usize = 300;
 const PROPS_TIMEOUT: Duration = Duration::from_secs(2);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Whole thumbnail read (open + load) gets this long before it is abandoned.
+const THUMBNAIL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Thumbnail workers that may be running at once. Abandoned (timed-out)
+/// workers still count until they finish, so a hung publisher can only
+/// leave this many threads stuck. Beyond that, artwork is skipped.
+const MAX_IN_FLIGHT_THUMBNAIL_WORKERS: usize = 2;
+
+static THUMBNAIL_WORKERS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
 pub struct MediaState {
@@ -133,6 +144,55 @@ fn wait<T: RuntimeType + 'static>(op: &IAsyncOperation<T>, timeout: Duration) ->
         return None;
     }
     op.GetResults().ok()
+}
+
+/// True when another worker may start, given how many are in flight.
+fn can_spawn(in_flight: usize) -> bool {
+    in_flight < MAX_IN_FLIGHT_THUMBNAIL_WORKERS
+}
+
+/// Gives back a worker slot when the worker ends, including on panic.
+struct InFlightGuard(&'static AtomicUsize);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Runs `f` on a worker thread and waits at most `timeout`. On timeout the
+/// worker is abandoned; its result is dropped when it finishes. Gives None
+/// without spawning when `gate` already counts MAX_IN_FLIGHT_THUMBNAIL_WORKERS.
+fn run_limited<T, F>(gate: &'static AtomicUsize, f: F, timeout: Duration) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Option<T> + Send + 'static,
+{
+    gate.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+        can_spawn(n).then_some(n + 1)
+    })
+    .ok()?;
+    let (tx, rx) = sync_channel::<Option<T>>(1);
+    let spawned = std::thread::Builder::new()
+        .name("lucent-media-thumb".into())
+        .spawn(move || {
+            let _slot = InFlightGuard(gate);
+            let _ = tx.send(f());
+        });
+    if spawned.is_err() {
+        gate.fetch_sub(1, Ordering::SeqCst);
+        return None;
+    }
+    rx.recv_timeout(timeout).ok().flatten()
+}
+
+/// `run_limited` against the thumbnail worker gate.
+fn run_with_timeout<T, F>(f: F, timeout: Duration) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Option<T> + Send + 'static,
+{
+    run_limited(&THUMBNAIL_WORKERS, f, timeout)
 }
 
 /// Thumbnail MIME type: the stream's own type when it is an image type,
@@ -328,6 +388,29 @@ pub fn media_next(media: State<'_, MediaHandle>) {
 #[tauri::command]
 pub fn media_prev(media: State<'_, MediaHandle>) {
     media.send(Command::Prev);
+}
+
+/// Initialises a WinRT apartment on a short-lived worker thread and balances
+/// it with RoUninitialize on drop, including early returns and unwinding.
+/// When initialisation fails (for example a mismatched apartment already
+/// exists), nothing is uninitialised.
+struct ApartmentGuard {
+    initialized: bool,
+}
+
+impl ApartmentGuard {
+    fn init() -> Self {
+        let initialized = unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok();
+        Self { initialized }
+    }
+}
+
+impl Drop for ApartmentGuard {
+    fn drop(&mut self) {
+        if self.initialized {
+            unsafe { RoUninitialize() };
+        }
+    }
 }
 
 fn init_apartment() {
@@ -569,7 +652,7 @@ fn read_session(session: &Session, cache: Option<&mut ArtworkCache>) -> WinResul
         props
             .Thumbnail()
             .ok()
-            .and_then(|thumb| read_thumbnail(&thumb))
+            .and_then(|thumb| read_thumbnail_with_timeout(&thumb))
             .and_then(|(mime, bytes)| artwork_data_url(&mime, &bytes))
     };
     let artwork = match cache {
@@ -619,6 +702,24 @@ fn read_timeline(session: &Session) -> Option<(i64, i64, i64, i64)> {
     let position = tl.Position().ok()?.Duration;
     let updated = tl.LastUpdatedTime().ok()?.UniversalTime;
     Some((start, end, position, updated))
+}
+
+/// `read_thumbnail` on a worker thread, abandoned after THUMBNAIL_TIMEOUT.
+/// The reference crosses threads as an AgileReference and is resolved there.
+fn read_thumbnail_with_timeout(thumb: &IRandomAccessStreamReference) -> Option<(String, Vec<u8>)> {
+    let agile = AgileReference::new(thumb).ok()?;
+    run_with_timeout(
+        move || {
+            // Declared first so it drops last, after every WinRT object.
+            let _apartment = ApartmentGuard::init();
+            // Rebind so the reference drops before the guard, not with the
+            // closure's captures after it.
+            let agile = agile;
+            let thumb = agile.resolve().ok()?;
+            read_thumbnail(&thumb)
+        },
+        THUMBNAIL_TIMEOUT,
+    )
 }
 
 /// Reads thumbnail bytes and their MIME type. The stream's own content type
@@ -957,6 +1058,102 @@ mod tests {
         assert_eq!(retry_delay(6), Duration::from_secs(60));
         assert_eq!(retry_delay(1000), Duration::from_secs(60));
         assert_eq!(retry_delay(u32::MAX), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn can_spawn_caps_in_flight_workers() {
+        assert!(can_spawn(0));
+        assert!(can_spawn(MAX_IN_FLIGHT_THUMBNAIL_WORKERS - 1));
+        assert!(!can_spawn(MAX_IN_FLIGHT_THUMBNAIL_WORKERS));
+        assert!(!can_spawn(MAX_IN_FLIGHT_THUMBNAIL_WORKERS + 1));
+    }
+
+    #[test]
+    fn run_with_timeout_returns_fast_value() {
+        assert_eq!(run_with_timeout(|| Some(42u8), Duration::from_secs(1)), Some(42));
+    }
+
+    #[test]
+    fn run_with_timeout_abandons_blocking_worker() {
+        let (release_tx, release_rx) = channel::<()>();
+        let start = std::time::Instant::now();
+        let out = run_with_timeout(
+            move || {
+                let _ = release_rx.recv();
+                Some(1u8)
+            },
+            Duration::from_millis(100),
+        );
+        assert_eq!(out, None);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // Unblock the abandoned worker so it exits and frees its slot.
+        drop(release_tx);
+    }
+
+    #[test]
+    fn run_limited_caps_stuck_workers() {
+        use std::sync::atomic::AtomicBool;
+        static GATE: AtomicUsize = AtomicUsize::new(0);
+        let timeout = Duration::from_millis(50);
+
+        // Two workers block until released, so both time out and stay in flight.
+        let (tx1, rx1) = channel::<()>();
+        let (tx2, rx2) = channel::<()>();
+        assert_eq!(
+            run_limited(
+                &GATE,
+                move || {
+                    let _ = rx1.recv();
+                    Some(1u8)
+                },
+                timeout
+            ),
+            None
+        );
+        assert_eq!(
+            run_limited(
+                &GATE,
+                move || {
+                    let _ = rx2.recv();
+                    Some(1u8)
+                },
+                timeout
+            ),
+            None
+        );
+        assert_eq!(GATE.load(Ordering::SeqCst), 2);
+
+        // At the cap: a third worker is never spawned.
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_clone = Arc::clone(&ran);
+        assert_eq!(
+            run_limited(
+                &GATE,
+                move || {
+                    ran_clone.store(true, Ordering::SeqCst);
+                    Some(1u8)
+                },
+                timeout
+            ),
+            None
+        );
+        assert!(!ran.load(Ordering::SeqCst));
+        assert_eq!(GATE.load(Ordering::SeqCst), 2);
+
+        // Release the stuck workers and wait for their slots to be returned.
+        drop(tx1);
+        drop(tx2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while GATE.load(Ordering::SeqCst) != 0 {
+            assert!(std::time::Instant::now() < deadline, "slots not returned");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Capacity is back: a worker runs again.
+        assert_eq!(
+            run_limited(&GATE, || Some(7u8), Duration::from_secs(1)),
+            Some(7)
+        );
     }
 
     #[test]
