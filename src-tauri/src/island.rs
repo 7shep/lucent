@@ -3,7 +3,8 @@
 
 use std::sync::Mutex;
 
-use tauri::{AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
+use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE};
 
 pub const LABEL: &str = "island";
 /// Logical sizes (width, height) of the collapsed and expanded pill.
@@ -133,10 +134,25 @@ pub fn island_rect(
     (x.round() as i32, y, w, h)
 }
 
+/// Physical size of the pill on a screen with the given scale factor.
+pub fn physical_size(width_logical: f64, height_logical: f64, scale: f64) -> (u32, u32) {
+    (
+        (width_logical * scale).round() as u32,
+        (height_logical * scale).round() as u32,
+    )
+}
+
+/// Moves and resizes in physical pixels on the target screen's scale. Setting the
+/// size can cross a DPI boundary and shift the window, so the position is set
+/// again afterwards.
 fn position(window: &WebviewWindow, screen: Screen, expanded: bool) -> Result<(), String> {
     let (x, y, w, h) = island_rect(screen.x, screen.y, screen.width, screen.scale, expanded);
+    let (pw, ph) = physical_size(w, h, screen.scale);
     window
-        .set_size(LogicalSize::new(w, h))
+        .set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_size(PhysicalSize::new(pw, ph))
         .map_err(|e| e.to_string())?;
     window
         .set_position(PhysicalPosition::new(x, y))
@@ -169,6 +185,25 @@ pub fn on_scale_changed(app: &AppHandle, scale: f64) {
     }
 }
 
+/// Hides and shows bypass tao on purpose, and must stay paired. tao keeps its own
+/// VISIBLE flag and skips hide() when the flag already says hidden. A raw show never
+/// updates that flag, so mixing raw show with tao's hide() breaks every hide after the
+/// first. tao's flag stays VISIBLE (from show_initial) throughout.
+/// Caveat: if code later changes tao window flags at runtime (always-on-top,
+/// decorations, focusable), tao re-applies SW_SHOW and can unhide the pill.
+fn show_window_raw(window: &WebviewWindow, cmd: SHOW_WINDOW_CMD) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    // SAFETY: hwnd is the island window's live handle. ShowWindow's return value is the
+    // previous visibility, not an error.
+    let _ = unsafe { ShowWindow(hwnd, cmd) };
+    Ok(())
+}
+
+/// The screen the pill is shown on, or None while it is hidden.
+pub fn shown_screen(app: &AppHandle) -> Result<Option<Screen>, String> {
+    with_placement(app, |p| if p.hidden { None } else { p.screen })
+}
+
 fn place(app: &AppHandle, expanded: bool) -> Result<(), String> {
     let window = window(app)?;
     let known = with_placement(app, |p| {
@@ -185,6 +220,8 @@ fn place(app: &AppHandle, expanded: bool) -> Result<(), String> {
             screen_of(&primary)
         }
     };
+    // Remember the resolved screen so later decisions compare against it.
+    with_placement(app, |p| p.screen = Some(screen))?;
     // Same monitor, so the region's scale still holds. The UI updates the region
     // itself around expand/collapse, in the order that avoids clipping.
     position(&window, screen, expanded)
@@ -223,12 +260,13 @@ pub fn set_target(app: &AppHandle, target: Option<Screen>) -> Result<(), String>
         return Ok(());
     };
     match target {
-        None => window.hide().map_err(|e| e.to_string()),
+        None => show_window_raw(&window, SW_HIDE),
         Some(screen) => {
             let expanded = with_placement(app, |p| p.expanded)?;
             reposition(app, &window, screen, expanded)?;
             if was_hidden {
-                window.show().map_err(|e| e.to_string())
+                // Shown without activating, so the pill never takes focus from a game.
+                show_window_raw(&window, SW_SHOWNOACTIVATE)
             } else {
                 Ok(())
             }
@@ -305,6 +343,18 @@ mod tests {
     #[test]
     fn offset_monitor_adds_its_origin() {
         assert_eq!(island_rect(1920, 0, 1920, 1.0, false).0, 2762);
+    }
+
+    #[test]
+    fn physical_size_at_100_percent_matches_logical() {
+        assert_eq!(super::physical_size(236.0, 40.0, 1.0), (236, 40));
+        assert_eq!(super::physical_size(400.0, 150.0, 1.0), (400, 150));
+    }
+
+    #[test]
+    fn physical_size_at_150_percent_scales_both_axes() {
+        assert_eq!(super::physical_size(236.0, 40.0, 1.5), (354, 60));
+        assert_eq!(super::physical_size(400.0, 150.0, 1.5), (600, 225));
     }
 }
 
