@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod fullscreen;
 mod island;
 mod media;
 
@@ -56,7 +57,9 @@ fn main() {
         .setup(|app| {
             let media = media::start(app.handle().clone());
             app.manage(media);
+            app.manage(island::IslandPlacement::default());
             island::show_initial(app.handle())?;
+            fullscreen::start(app.handle().clone());
             build_tray(app)?;
             Ok(())
         })
