@@ -167,6 +167,45 @@ pub fn should_emit(prev: &Option<MediaState>, next: &MediaState) -> bool {
     prev.as_ref() != Some(next)
 }
 
+/// Identity of the current track. Artwork is reused while this stays equal.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct TrackKey {
+    pub app: Option<String>,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+}
+
+/// Last artwork read, keyed by track. Play/pause changes reuse it instead of
+/// re-reading and re-encoding the thumbnail.
+#[derive(Default)]
+pub struct ArtworkCache {
+    key: Option<TrackKey>,
+    artwork: Option<String>,
+}
+
+impl ArtworkCache {
+    /// Cached artwork for `key`, or None when a read is needed. A cached None
+    /// is a miss, so artwork that was not ready yet is read again.
+    pub fn lookup(&self, key: &TrackKey) -> Option<String> {
+        if self.key.as_ref() == Some(key) {
+            self.artwork.clone()
+        } else {
+            None
+        }
+    }
+
+    pub fn store(&mut self, key: TrackKey, artwork: Option<String>) {
+        self.key = Some(key);
+        self.artwork = artwork;
+    }
+
+    pub fn clear(&mut self) {
+        self.key = None;
+        self.artwork = None;
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Command {
     Toggle,
@@ -213,7 +252,7 @@ pub fn probe() -> MediaState {
         return MediaState::default();
     };
     match current_session(&manager) {
-        Some(session) => read_session(&session).unwrap_or_default(),
+        Some(session) => read_session(&session, None).unwrap_or_default(),
         None => MediaState::default(),
     }
 }
@@ -261,6 +300,7 @@ struct Monitor {
     manager: Option<SessionManager>,
     sub: Option<Subscription>,
     emitted: Option<MediaState>,
+    artwork: ArtworkCache,
 }
 
 fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>, rx: Receiver<Msg>) {
@@ -273,6 +313,7 @@ fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>,
         manager,
         sub: None,
         emitted: None,
+        artwork: ArtworkCache::default(),
     };
     monitor.attach_session();
     monitor.publish();
@@ -309,6 +350,7 @@ impl Monitor {
 
     fn attach_session(&mut self) {
         self.detach_session();
+        self.artwork.clear();
         let Some(manager) = &self.manager else {
             return;
         };
@@ -360,9 +402,9 @@ impl Monitor {
         }
     }
 
-    fn read(&self) -> MediaState {
+    fn read(&mut self) -> MediaState {
         match &self.sub {
-            Some(sub) => read_session(&sub.session).unwrap_or_default(),
+            Some(sub) => read_session(&sub.session, Some(&mut self.artwork)).unwrap_or_default(),
             None => MediaState::default(),
         }
     }
@@ -419,7 +461,8 @@ fn current_session(manager: &SessionManager) -> Option<Session> {
     manager.GetCurrentSession().ok()
 }
 
-fn read_session(session: &Session) -> WinResult<MediaState> {
+/// With a cache, the thumbnail is only read when the track key misses it.
+fn read_session(session: &Session, cache: Option<&mut ArtworkCache>) -> WinResult<MediaState> {
     let props = wait(&session.TryGetMediaPropertiesAsync()?, PROPS_TIMEOUT)
         .ok_or_else(windows::core::Error::empty)?;
     let playing = session.GetPlaybackInfo()?.PlaybackStatus()? == PlaybackStatus::Playing;
@@ -427,20 +470,45 @@ fn read_session(session: &Session) -> WinResult<MediaState> {
         .SourceAppUserModelId()
         .ok()
         .map(|s| s.to_string());
-    let artwork = props
-        .Thumbnail()
-        .ok()
-        .and_then(|thumb| read_thumbnail(&thumb))
-        .and_then(|(mime, bytes)| artwork_data_url(&mime, &bytes));
+    let title = props.Title().ok().map(|s| s.to_string());
+    let artist = props.Artist().ok().map(|s| s.to_string());
+    let album = props.AlbumTitle().ok().map(|s| s.to_string());
+
+    let read_artwork = || {
+        props
+            .Thumbnail()
+            .ok()
+            .and_then(|thumb| read_thumbnail(&thumb))
+            .and_then(|(mime, bytes)| artwork_data_url(&mime, &bytes))
+    };
+    let artwork = match cache {
+        Some(cache) => {
+            let key = TrackKey {
+                app: app.clone(),
+                title: title.clone(),
+                artist: artist.clone(),
+                album: album.clone(),
+            };
+            match cache.lookup(&key) {
+                Some(hit) => Some(hit),
+                None => {
+                    let fresh = read_artwork();
+                    cache.store(key, fresh.clone());
+                    fresh
+                }
+            }
+        }
+        None => read_artwork(),
+    };
 
     let (position_ms, duration_ms, updated_at_ms) = read_timeline(session)
         .map(|(start, end, position, updated)| timeline(start, end, position, updated))
         .unwrap_or((None, None, None));
 
     Ok(MediaState {
-        title: props.Title().ok().map(|s| s.to_string()),
-        artist: props.Artist().ok().map(|s| s.to_string()),
-        album: props.AlbumTitle().ok().map(|s| s.to_string()),
+        title,
+        artist,
+        album,
         playing,
         app,
         artwork,
@@ -632,6 +700,68 @@ mod tests {
     fn wait_returns_ready_value() {
         let op = IAsyncOperation::<bool>::ready(Ok(true));
         assert_eq!(wait(&op, Duration::from_millis(200)), Some(true));
+    }
+
+    fn track(title: &str) -> TrackKey {
+        TrackKey {
+            app: Some("Spotify.exe".into()),
+            title: Some(title.into()),
+            artist: Some("Artist".into()),
+            album: Some("Album".into()),
+        }
+    }
+
+    #[test]
+    fn artwork_cache_same_key_hit_reuses() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        assert_eq!(
+            cache.lookup(&track("Song")),
+            Some("data:image/png;base64,AQID".to_string())
+        );
+    }
+
+    #[test]
+    fn artwork_cache_different_title_misses() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        assert_eq!(cache.lookup(&track("Other")), None);
+    }
+
+    #[test]
+    fn artwork_cache_any_key_field_change_misses() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        let other_app = TrackKey {
+            app: Some("Other.exe".into()),
+            ..track("Song")
+        };
+        let other_album = TrackKey {
+            album: None,
+            ..track("Song")
+        };
+        assert_eq!(cache.lookup(&other_app), None);
+        assert_eq!(cache.lookup(&other_album), None);
+    }
+
+    #[test]
+    fn artwork_cache_cached_none_re_reads() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), None);
+        assert_eq!(cache.lookup(&track("Song")), None);
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        assert_eq!(
+            cache.lookup(&track("Song")),
+            Some("data:image/png;base64,AQID".to_string())
+        );
+    }
+
+    #[test]
+    fn artwork_cache_cleared_on_session_change() {
+        let mut cache = ArtworkCache::default();
+        cache.store(track("Song"), Some("data:image/png;base64,AQID".into()));
+        cache.clear();
+        assert_eq!(cache.lookup(&track("Song")), None);
     }
 
     #[test]
