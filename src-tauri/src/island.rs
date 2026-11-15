@@ -48,6 +48,13 @@ fn window_logical(expanded: bool) -> (f64, f64) {
     }
 }
 
+/// Region for the pill in state (expanded, empty) at DPI `scale`.
+pub fn region_for(expanded: bool, empty: bool, scale: f64) -> HitRegion {
+    let window_px = (window_logical(expanded).0 * scale).round() as i32;
+    let (pill, radius) = pill_shape(expanded, empty);
+    hit_region(window_px, pill, radius, scale)
+}
+
 /// Region for a pill of `pill` logical size, drawn at the top and centred in a window
 /// `window_width_px` physical pixels wide. Everything is scaled by `scale`.
 pub fn hit_region(window_width_px: i32, pill: (f64, f64), radius: f64, scale: f64) -> HitRegion {
@@ -90,6 +97,9 @@ struct Placement {
     expanded: bool,
     /// True while a fullscreen app leaves no free monitor for the pill.
     hidden: bool,
+    /// Last pill shape (expanded, empty) passed to set_hit_region. None until the
+    /// UI first sets a region; until then the whole window is clickable.
+    region_shape: Option<(bool, bool)>,
 }
 
 /// Tauri-managed placement state. Only the main thread touches the window,
@@ -134,6 +144,31 @@ fn position(window: &WebviewWindow, screen: Screen, expanded: bool) -> Result<()
     Ok(())
 }
 
+/// Moves the island onto `screen`, then re-applies the hit region at that screen's
+/// scale. The region is in physical pixels, so it goes stale on a DPI change.
+fn reposition(app: &AppHandle, window: &WebviewWindow, screen: Screen, expanded: bool) -> Result<(), String> {
+    position(window, screen, expanded)?;
+    reapply_region(app, window, screen.scale)
+}
+
+/// Re-applies the last hit region the UI asked for, at `scale`. No-op before the
+/// UI has set one.
+fn reapply_region(app: &AppHandle, window: &WebviewWindow, scale: f64) -> Result<(), String> {
+    let Some((expanded, empty)) = with_placement(app, |p| p.region_shape)? else {
+        return Ok(());
+    };
+    apply_native_region(window, region_for(expanded, empty, scale))
+}
+
+/// Called when the island window's DPI scale changes (display scaling changed, or
+/// the window landed on a monitor with a different scale).
+pub fn on_scale_changed(app: &AppHandle, scale: f64) {
+    let result = window(app).and_then(|window| reapply_region(app, &window, scale));
+    if let Err(err) = result {
+        eprintln!("lucent: hit region refresh failed: {err}");
+    }
+}
+
 fn place(app: &AppHandle, expanded: bool) -> Result<(), String> {
     let window = window(app)?;
     let known = with_placement(app, |p| {
@@ -150,6 +185,8 @@ fn place(app: &AppHandle, expanded: bool) -> Result<(), String> {
             screen_of(&primary)
         }
     };
+    // Same monitor, so the region's scale still holds. The UI updates the region
+    // itself around expand/collapse, in the order that avoids clipping.
     position(&window, screen, expanded)
 }
 
@@ -189,7 +226,7 @@ pub fn set_target(app: &AppHandle, target: Option<Screen>) -> Result<(), String>
         None => window.hide().map_err(|e| e.to_string()),
         Some(screen) => {
             let expanded = with_placement(app, |p| p.expanded)?;
-            position(&window, screen, expanded)?;
+            reposition(app, &window, screen, expanded)?;
             if was_hidden {
                 window.show().map_err(|e| e.to_string())
             } else {
@@ -209,13 +246,11 @@ pub fn set_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
 /// pill has shrunk. Otherwise drawn pixels get clipped.
 #[tauri::command]
 pub fn set_hit_region(app: AppHandle, expanded: bool, empty: bool) -> Result<(), String> {
-    let window = app
-        .get_webview_window(LABEL)
-        .ok_or("island window not found")?;
+    let window = window(&app)?;
+    // Remembered so a later move to another monitor can rebuild it at the new scale.
+    with_placement(&app, |p| p.region_shape = Some((expanded, empty)))?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    let window_px = (window_logical(expanded).0 * scale).round() as i32;
-    let (pill, radius) = pill_shape(expanded, empty);
-    apply_native_region(&window, hit_region(window_px, pill, radius, scale))
+    apply_native_region(&window, region_for(expanded, empty, scale))
 }
 
 #[cfg(windows)]
@@ -275,7 +310,28 @@ mod tests {
 
 #[cfg(test)]
 mod region_tests {
-    use super::{hit_region, pill_shape, HitRegion, COLLAPSED, EMPTY, EXPANDED};
+    use super::{hit_region, pill_shape, region_for, HitRegion, COLLAPSED, EMPTY, EXPANDED};
+
+    #[test]
+    fn region_for_tracks_scale_when_moving_monitors() {
+        // Same pill state on a 100% and a 150% monitor.
+        assert_eq!(
+            region_for(false, false, 1.0),
+            HitRegion { x: 0, y: 0, width: 236, height: 40, radius: 20 }
+        );
+        assert_eq!(
+            region_for(false, false, 1.5),
+            HitRegion { x: 0, y: 0, width: 354, height: 60, radius: 30 }
+        );
+        assert_eq!(
+            region_for(false, true, 1.5),
+            HitRegion { x: 114, y: 0, width: 126, height: 36, radius: 18 }
+        );
+        assert_eq!(
+            region_for(true, true, 1.5),
+            HitRegion { x: 0, y: 0, width: 600, height: 225, radius: 42 }
+        );
+    }
 
     #[test]
     fn collapsed_region_matches_pill_at_100_percent() {
