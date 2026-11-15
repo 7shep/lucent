@@ -28,7 +28,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsZoomed, KillTimer, RegisterClassW, SetTimer, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
     EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
     EVENT_SYSTEM_MINIMIZESTART, GWL_STYLE, MSG, OBJID_WINDOW, WINDOW_EX_STYLE,
-    WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_POPUP,
+    WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW,
+    WS_CAPTION, WS_POPUP,
 };
 
 use crate::island::{self, Screen};
@@ -67,6 +68,41 @@ pub fn choose_target(monitors: &[Screen], primary_index: usize, fullscreen_on: &
     (0..monitors.len())
         .find(|&i| i != primary_index && !busy(i))
         .map_or(Target::Hidden, Target::Show)
+}
+
+/// What the foreground window is, as far as the pill is concerned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Fg {
+    /// The pill itself (a click, a tray menu). The placement must not change.
+    Ours,
+    /// A fullscreen window, with the rect of the monitor it is on.
+    Fullscreen(RECT),
+    /// Anything else.
+    Other,
+}
+
+/// Pure decision for one evaluation. `None` means no change. `Some(target)`
+/// means move to `target`, where `None` is hidden. `current` is the screen the
+/// pill is shown on, or None while hidden.
+pub fn decide(
+    fg: Fg,
+    screens: &[Screen],
+    primary_index: usize,
+    current: Option<Screen>,
+) -> Option<Option<Screen>> {
+    if screens.is_empty() {
+        return None;
+    }
+    let fullscreen_on: Vec<bool> = match fg {
+        Fg::Ours => return None,
+        Fg::Other => vec![false; screens.len()],
+        Fg::Fullscreen(rect) => screens.iter().map(|s| same_rect(rect, s)).collect(),
+    };
+    let target = match choose_target(screens, primary_index, &fullscreen_on) {
+        Target::Show(i) => Some(screens[i]),
+        Target::Hidden => None,
+    };
+    (target != current).then_some(target)
 }
 
 /// True when `window` covers all of `monitor`.
@@ -188,7 +224,8 @@ fn create_watch_window() -> Option<HWND> {
 
 unsafe extern "system" fn watch_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
-        WM_DISPLAYCHANGE => schedule(),
+        // Resolution, DPI scaling and layout changes can all alter the decision.
+        WM_DISPLAYCHANGE | WM_DPICHANGED | WM_SETTINGCHANGE => schedule(),
         WM_TIMER if wparam.0 == TIMER_ID => fire(hwnd),
         _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
@@ -274,30 +311,45 @@ fn apply(app: &AppHandle) {
         .and_then(|p| screens.iter().position(|s| *s == p))
         .unwrap_or(0);
 
-    let fullscreen = unsafe { foreground_fullscreen_monitor() };
-    let fullscreen_on: Vec<bool> = screens
-        .iter()
-        .map(|s| fullscreen.is_some_and(|rect| same_rect(rect, s)))
-        .collect();
-
-    let target = match choose_target(&screens, primary_index, &fullscreen_on) {
-        Target::Show(i) => Some(screens[i]),
-        Target::Hidden => None,
+    let current = match island::shown_screen(app) {
+        Ok(current) => current,
+        Err(err) => {
+            eprintln!("lucent: fullscreen placement failed: {err}");
+            return;
+        }
     };
-    if let Err(err) = island::set_target(app, target) {
-        eprintln!("lucent: fullscreen placement failed: {err}");
+    let fg = unsafe { foreground_kind() };
+    if let Some(next) = decide(fg, &screens, primary_index, current) {
+        if let Err(err) = island::set_target(app, next) {
+            eprintln!("lucent: fullscreen placement failed: {err}");
+        }
     }
 }
 
-/// Monitor rect of the foreground window when it is fullscreen. Only the
-/// foreground window is checked, which is how Windows decides too.
+/// Classifies the foreground window. Our own windows are `Ours` and keep the
+/// current placement, so clicking the pill never moves it.
+unsafe fn foreground_kind() -> Fg {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0.is_null() {
+        return Fg::Other;
+    }
+    if unsafe { is_ours(hwnd) } {
+        return Fg::Ours;
+    }
+    match unsafe { fullscreen_monitor_of(hwnd) } {
+        Some(rect) => Fg::Fullscreen(rect),
+        None => Fg::Other,
+    }
+}
+
+/// Monitor rect of `hwnd` when it is fullscreen. Only the foreground window is
+/// checked, which is how Windows decides too.
 ///
 /// Fullscreen means the window rect covers its monitor. An exclusive D3D
 /// fullscreen app also counts, through SHQueryUserNotificationState, because
 /// its window rect may not match the monitor.
-unsafe fn foreground_fullscreen_monitor() -> Option<RECT> {
-    let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0.is_null() || !is_candidate(hwnd) {
+unsafe fn fullscreen_monitor_of(hwnd: HWND) -> Option<RECT> {
+    if !unsafe { is_candidate(hwnd) } {
         return None;
     }
     let mut window = RECT::default();
@@ -327,7 +379,14 @@ unsafe fn foreground_fullscreen_monitor() -> Option<RECT> {
     (windowed_fullscreen || exclusive).then_some(info.rcMonitor)
 }
 
-/// Visible, not minimised, not cloaked, not ours, and not a shell window.
+/// True when the window belongs to this process (the pill, its WebView, tray UI).
+unsafe fn is_ours(hwnd: HWND) -> bool {
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32)) };
+    pid == std::process::id()
+}
+
+/// Visible, not minimised, not cloaked, and not a shell window.
 unsafe fn is_candidate(hwnd: HWND) -> bool {
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
@@ -341,11 +400,6 @@ unsafe fn is_candidate(hwnd: HWND) -> bool {
             size_of::<u32>() as u32,
         );
         if cloak.is_ok() && cloaked != 0 {
-            return false;
-        }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
-        if pid == std::process::id() {
             return false;
         }
         let mut class = [0u16; 256];
@@ -490,6 +544,63 @@ mod tests {
         assert!(!looks_fullscreen(false, false, false));
         assert!(!looks_fullscreen(false, true, true));
         assert!(!looks_fullscreen(false, false, true));
+    }
+
+    #[test]
+    fn clicking_our_own_window_keeps_the_placement() {
+        // The pill on the secondary, after a click made it foreground: no move.
+        assert_eq!(
+            decide(Fg::Ours, &two(), 0, Some(screen(1920))),
+            None
+        );
+        assert_eq!(decide(Fg::Ours, &two(), 0, None), None);
+    }
+
+    #[test]
+    fn other_foreground_moves_back_to_a_free_primary() {
+        assert_eq!(
+            decide(Fg::Other, &two(), 0, Some(screen(1920))),
+            Some(Some(screen(0)))
+        );
+    }
+
+    #[test]
+    fn other_foreground_with_no_change_is_none() {
+        assert_eq!(decide(Fg::Other, &two(), 0, Some(screen(0))), None);
+    }
+
+    #[test]
+    fn fullscreen_primary_moves_the_pill_to_secondary() {
+        assert_eq!(
+            decide(Fg::Fullscreen(rect(0, 0, 1920, 1080)), &two(), 0, Some(screen(0))),
+            Some(Some(screen(1920)))
+        );
+    }
+
+    #[test]
+    fn fullscreen_on_the_only_monitor_hides_the_pill() {
+        assert_eq!(
+            decide(Fg::Fullscreen(rect(0, 0, 1920, 1080)), &one(), 0, Some(screen(0))),
+            Some(None)
+        );
+        // Already hidden: nothing to do.
+        assert_eq!(
+            decide(Fg::Fullscreen(rect(0, 0, 1920, 1080)), &one(), 0, None),
+            None
+        );
+    }
+
+    #[test]
+    fn fullscreen_on_secondary_leaves_the_pill_on_primary() {
+        assert_eq!(
+            decide(Fg::Fullscreen(rect(1920, 0, 3840, 1080)), &two(), 0, Some(screen(0))),
+            None
+        );
+    }
+
+    #[test]
+    fn decide_with_no_screens_is_none() {
+        assert_eq!(decide(Fg::Other, &[], 0, None), None);
     }
 
     #[test]
