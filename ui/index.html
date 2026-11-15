@@ -25,6 +25,13 @@
       <div class="meta">
         <p class="title" id="title">Nothing playing</p>
         <p class="artist" id="artist"></p>
+        <div class="timeline" id="timeline">
+          <span class="timeline-time" id="elapsed">0:00</span>
+          <div class="timeline-track" id="track" role="progressbar" aria-label="Playback position" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+            <div class="timeline-fill" id="fill"></div>
+          </div>
+          <span class="timeline-time timeline-time--end" id="remaining">-0:00</span>
+        </div>
         <div class="controls">
           <button class="btn" id="prev" type="button" aria-label="Previous track">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h2v12H6zM9.5 12 18 6v12z"/></svg>
