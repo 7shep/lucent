@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Lucent Island</title>
+  <link rel="stylesheet" href="island.css">
+</head>
+<body>
+  <main id="island" class="island is-empty" aria-label="Now playing">
+    <div class="collapsed">
+      <div class="thumb" id="mini-thumb">
+        <img id="mini-img" alt="">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
+      </div>
+      <div class="eq" aria-hidden="true"><span></span><span></span><span></span></div>
+    </div>
+
+    <div class="card">
+      <div class="thumb thumb--lg" id="thumb">
+        <img id="img" alt="">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
+      </div>
+      <div class="meta">
+        <p class="title" id="title">Nothing playing</p>
+        <p class="artist" id="artist"></p>
+        <div class="controls">
+          <button class="btn" id="prev" type="button" aria-label="Previous track">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h2v12H6zM9.5 12 18 6v12z"/></svg>
+          </button>
+          <button class="btn btn--main" id="toggle" type="button" aria-label="Play">
+            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+          </button>
+          <button class="btn" id="next" type="button" aria-label="Next track">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 6h2v12h-2zM6 6l8.5 6L6 18z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="island.js"></script>
+</body>
+</html>

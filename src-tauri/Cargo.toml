@@ -1,0 +1,29 @@
+[package]
+name = "lucent"
+version = "0.1.0"
+description = "Liquid-glass shell customizations for Windows 11, starting with a Dynamic-Island-style now-playing pill"
+license = "MIT"
+authors = ["7shep"]
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+# custom-protocol makes `cargo run` serve ../ui from the binary (no dev server).
+tauri = { version = "2", features = ["tray-icon", "custom-protocol"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-future = "0.3"
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media_Control",
+    "Storage_Streams",
+    "Win32_System_Console",
+    "Win32_System_WinRT",
+] }
