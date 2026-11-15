@@ -260,10 +260,27 @@ Notification-area host on its own thread and message loop:
   caller still waits, emit `tray-changed`. Every `WM_COPYDATA` (also appbar
   `dwData 0` and icon-rect `dwData 3`), `WM_COMMAND` and `WM_USER..0x7FFF`
   message is forwarded to Explorer's tray, so Explorer keeps a full copy.
-- At start, posts `TaskbarCreated` so running apps re-register. On a
-  `TaskbarCreated` from a restarted Explorer, re-raises and re-broadcasts (our
-  own broadcast arrives while we are first, so it does not loop). WinEvents
-  (show, foreground of a `Shell_TrayWnd`) re-raise the host; no polling.
+- Posts `TaskbarCreated` so running apps re-register, once the tray z-order has
+  been quiet for 1 s (a one-shot timer, restarted by every re-raise): Explorer
+  re-raises its tray many times while it settles after takeover, and a
+  re-registration then would go to Explorer. On a `TaskbarCreated` from a
+  restarted Explorer, re-raises and schedules the broadcast again (our own
+  broadcast arrives while we are first, so it does not loop).
+- Re-raise checks (one `FindWindowExW`): after every message forwarded to
+  Explorer (it re-raises its tray while handling an `NIM_DELETE`), and on
+  WinEvents (show or foreground of a `Shell_TrayWnd`, any `EVENT_OBJECT_REORDER`).
+  No polling.
+- For 10 s after our broadcast, an `NIM_DELETE` of an icon the host never saw is
+  answered locally and not forwarded. Apps reply to `TaskbarCreated` with a
+  delete and an add; some (Steam) only delete, and forwarding that would remove
+  their icon from Explorer's tray.
+- `shell.rs` ignores a `TaskbarCreated` whose primary Explorer `Shell_TrayWnd`
+  is unchanged (`is_new_taskbar`), so the host's broadcast does not re-run the
+  Explorer-restart path (re-applying auto-hide makes Explorer re-raise its tray).
+- The payload on Windows 11 is 1484 bytes (an exe path follows the documented
+  fields); only the documented offsets are read.
+- Each icon carries its owner's display name (FileDescription, else exe name),
+  the label when there is no tooltip. `LUCENT_TRAY_DEBUG=1` logs every call.
 - Commands: `get_tray_icons` (visible icons, dead owners dropped; errors when
   the host is not running) and `tray_click(id, button)` with `left`, `right`,
   `double`: `AllowSetForegroundWindow(owner pid)`, then the Explorer sequence

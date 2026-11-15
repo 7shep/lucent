@@ -580,6 +580,17 @@ fn process_info(pid: u32) -> ProcInfo {
     }
 }
 
+/// A process's display name: its exe's FileDescription, else the exe's file
+/// name without extension. None when the process cannot be queried.
+pub(crate) fn process_display_name(pid: u32) -> Option<String> {
+    let exe = process_info(pid).exe?;
+    file_description(&exe).or_else(|| {
+        std::path::Path::new(&exe)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+    })
+}
+
 fn process_image(handle: HANDLE) -> Option<String> {
     let mut buf = vec![0u16; 4096];
     let mut len = buf.len() as u32;

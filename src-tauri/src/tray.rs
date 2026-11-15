@@ -9,10 +9,10 @@
 //! tray window, or when Explorer restarts.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -26,13 +26,13 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW,
-    DispatchMessageW, FindWindowExW, GetClassNameW, GetCursorPos, GetIconInfo, GetMessageW,
+    DispatchMessageW, FindWindowExW, KillTimer, SetTimer, GetClassNameW, GetCursorPos, GetIconInfo, GetMessageW,
     GetWindowRect, GetWindowThreadProcessId, InSendMessage, IsWindow, PostMessageW,
     PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageTimeoutW, SetWindowPos,
-    EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, HICON, HWND_BROADCAST, HWND_TOPMOST, ICONINFO,
+    EVENT_OBJECT_REORDER, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, HICON, HWND_BROADCAST, HWND_TOPMOST, ICONINFO,
     MSG, MSGFLT_ALLOW, OBJID_WINDOW, SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOOWNERZORDER, WINEVENT_OUTOFCONTEXT, WM_CLOSE, WM_COMMAND, WM_COPYDATA,
-    WM_DESTROY, WM_USER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_DESTROY, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::apps;
@@ -158,6 +158,8 @@ pub struct TrayIcon {
     /// PNG data URL. None until an icon arrives, or when it could not be read.
     pub image: Option<String>,
     pub state: u32,
+    /// The owning app's name, the label when there is no tooltip.
+    pub app: Option<String>,
 }
 
 impl TrayIcon {
@@ -241,6 +243,7 @@ impl Store {
                     tip: String::new(),
                     image: None,
                     state: 0,
+                    app: None,
                 };
                 icon.update(msg, &image);
                 self.icons.push(icon);
@@ -271,6 +274,16 @@ impl Store {
         self.icons.len() != before
     }
 
+    /// Names the owners of icons that have no app name yet. True when any changed.
+    pub fn fill_names(&mut self, name: impl Fn(u32) -> Option<String>) -> bool {
+        let mut changed = false;
+        for icon in self.icons.iter_mut().filter(|icon| icon.app.is_none()) {
+            icon.app = name(icon.hwnd);
+            changed |= icon.app.is_some();
+        }
+        changed
+    }
+
     pub fn views(&self) -> Vec<IconView> {
         self.icons
             .iter()
@@ -279,6 +292,7 @@ impl Store {
                 id: icon.id.to_string(),
                 tip: icon.tip.clone(),
                 image: icon.image.clone(),
+                app: icon.app.clone().unwrap_or_default(),
             })
             .collect()
     }
@@ -290,6 +304,22 @@ pub struct IconView {
     pub id: String,
     pub tip: String,
     pub image: Option<String>,
+    pub app: String,
+}
+
+// ---------------------------------------------------------------------------
+// Forwarding deletes (pure).
+
+/// How long after Lucent's own TaskbarCreated broadcast a delete of an unknown
+/// icon is kept from Explorer.
+pub const BROADCAST_GRACE: Duration = Duration::from_secs(10);
+
+/// Whether an NIM_DELETE goes on to Explorer. Apps answer TaskbarCreated with a
+/// delete and then an add, but some (Steam) only delete. A delete of an icon
+/// Lucent never saw, right after Lucent's own broadcast, is that reply: Explorer
+/// keeps the icon, so it is still there when Lucent quits.
+pub fn forward_delete(known: bool, since_broadcast: Option<Duration>) -> bool {
+    known || since_broadcast.is_none_or(|since| since > BROADCAST_GRACE)
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +409,15 @@ static STORE: Mutex<Option<Store>> = Mutex::new(None);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static HOST_HWND: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+/// A TaskbarCreated broadcast waits for this much quiet in the tray z-order.
+/// Explorer re-raises its tray many times while it settles (after takeover or
+/// a restart), and a re-registration during that would go to Explorer.
+const SETTLE_MS: u32 = 1000;
+const BROADCAST_TIMER: usize = 1;
+/// A broadcast is waiting for the z-order to settle.
+static BROADCAST_PENDING: AtomicBool = AtomicBool::new(false);
+/// When Lucent last broadcast TaskbarCreated.
+static BROADCAST_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn store() -> MutexGuard<'static, Option<Store>> {
     STORE.lock().unwrap_or_else(PoisonError::into_inner)
@@ -405,6 +444,19 @@ fn host_hwnd() -> Option<HWND> {
 fn is_alive(raw: u32) -> bool {
     // SAFETY: IsWindow accepts any value and only reports whether it is a window.
     unsafe { IsWindow(Some(hwnd_from_u32(raw))) }.as_bool()
+}
+
+/// `LUCENT_TRAY_DEBUG=1` logs every Shell_NotifyIcon call to stderr.
+fn debug_log() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LUCENT_TRAY_DEBUG").is_some_and(|v| v == "1"))
+}
+
+fn owner_name(raw: u32) -> Option<String> {
+    let mut pid = 0u32;
+    // SAFETY: GetWindowThreadProcessId accepts any handle; pid is a valid out-pointer.
+    unsafe { GetWindowThreadProcessId(hwnd_from_u32(raw), Some(&mut pid as *mut u32)) };
+    (pid != 0).then(|| crate::tasks::process_display_name(pid)).flatten()
 }
 
 fn emit_changed() {
@@ -482,15 +534,16 @@ fn host_thread(ready: mpsc::Sender<Result<(), String>>) {
             eprintln!("lucent: tray message filter: {err}");
         }
     }
-    let hooks = [EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND].map(|event| {
+    let hooks = [EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_REORDER].map(|event| {
         // SAFETY: the callback is a static extern fn, and the hook is out of context,
         // so it runs on this thread's message loop.
         unsafe { SetWinEventHook(event, event, None, Some(on_tray_event), 0, 0, WINEVENT_OUTOFCONTEXT) }
     });
     raise(hwnd);
     let _ = ready.send(Ok(()));
-    // Every app with an icon re-registers, now with this window.
-    broadcast_taskbar_created();
+    // Every app with an icon re-registers, now with this window, once Explorer
+    // has stopped re-raising its tray.
+    schedule_broadcast();
 
     let mut msg = MSG::default();
     loop {
@@ -599,7 +652,25 @@ fn ensure_first() -> bool {
         return false;
     }
     raise(ours);
+    if debug_log() {
+        eprintln!("lucent tray: {:?} re-raised the host", Instant::now());
+    }
+    if BROADCAST_PENDING.load(Ordering::SeqCst) {
+        schedule_broadcast();
+    }
     true
+}
+
+/// (Re)starts the settle timer; WM_TIMER then broadcasts. Re-arming an
+/// existing timer restarts its countdown.
+fn schedule_broadcast() {
+    let Some(hwnd) = host_hwnd() else { return };
+    BROADCAST_PENDING.store(true, Ordering::SeqCst);
+    // SAFETY: hwnd is the host window; no callback, so WM_TIMER is posted to it.
+    if unsafe { SetTimer(Some(hwnd), BROADCAST_TIMER, SETTLE_MS, None) } == 0 {
+        BROADCAST_PENDING.store(false, Ordering::SeqCst);
+        broadcast_taskbar_created();
+    }
 }
 
 fn broadcast_taskbar_created() {
@@ -607,6 +678,7 @@ fn broadcast_taskbar_created() {
     if msg == 0 {
         return;
     }
+    *BROADCAST_AT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
     // SAFETY: a broadcast post with no pointers; it returns at once.
     if let Err(err) = unsafe { PostMessageW(Some(HWND_BROADCAST), msg, WPARAM(0), LPARAM(0)) } {
         eprintln!("lucent: TaskbarCreated broadcast failed: {err}");
@@ -620,17 +692,23 @@ fn is_tray_class(hwnd: HWND) -> bool {
     len > 0 && String::from_utf16_lossy(&buf[..len as usize]) == "Shell_TrayWnd"
 }
 
-/// EVENT_OBJECT_SHOW / EVENT_SYSTEM_FOREGROUND for a `Shell_TrayWnd`: Explorer
-/// may have raised its tray above the host, so check and raise again.
+/// EVENT_OBJECT_SHOW / EVENT_SYSTEM_FOREGROUND for a `Shell_TrayWnd`, or any
+/// EVENT_OBJECT_REORDER: Explorer may have raised its tray above the host, so
+/// check and raise again. The check is one FindWindowExW.
 unsafe extern "system" fn on_tray_event(
     _hook: HWINEVENTHOOK,
-    _event: u32,
+    event: u32,
     hwnd: HWND,
     id_object: i32,
     _id_child: i32,
     _thread: u32,
     _time: u32,
 ) {
+    // A z-order change names the parent whose children moved, so just check.
+    if event == EVENT_OBJECT_REORDER {
+        ensure_first();
+        return;
+    }
     if id_object != OBJID_WINDOW.0 || hwnd.0.is_null() || Some(hwnd) == host_hwnd() {
         return;
     }
@@ -648,7 +726,7 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         // Explorer restarted, and its new tray is above the host. Our own
         // broadcast arrives while the host is first, so it does not loop.
         if ensure_first() {
-            broadcast_taskbar_created();
+            schedule_broadcast();
         }
         return LRESULT(0);
     }
@@ -657,13 +735,34 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             // SAFETY: for WM_COPYDATA, lparam is a COPYDATASTRUCT that the system
             // keeps valid until this procedure returns.
             let ours = unsafe { on_copydata(lparam) };
-            let forwarded = forward_send(msg, wparam, lparam);
+            let forwarded = match ours {
+                Some(Outcome { forward: false, .. }) => None,
+                _ => forward_send(msg, wparam, lparam),
+            };
+            if debug_log() {
+                // SAFETY: as above, lparam is the live COPYDATASTRUCT.
+                let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
+                eprintln!(
+                    "lucent tray: copydata kind={} bytes={} ours={ours:?} explorer={:?}",
+                    cds.dwData,
+                    cds.cbData,
+                    forwarded.map(|r| r.0)
+                );
+            }
             // The caller hears success if either side accepted the call.
-            if ours == Some(true) {
+            if ours.is_some_and(|o| o.ok || !o.forward) {
                 LRESULT(1)
             } else {
                 forwarded.unwrap_or(LRESULT(0))
             }
+        }
+        WM_TIMER if wparam.0 == BROADCAST_TIMER => {
+            // SAFETY: the timer was set on this window by schedule_broadcast.
+            let _ = unsafe { KillTimer(Some(hwnd), BROADCAST_TIMER) };
+            BROADCAST_PENDING.store(false, Ordering::SeqCst);
+            ensure_first();
+            broadcast_taskbar_created();
+            LRESULT(0)
         }
         WM_DESTROY => {
             // SAFETY: called on the thread that owns the window.
@@ -679,6 +778,7 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 if let Some(tray) = explorer_tray() {
                     // SAFETY: a post carries the values as they arrived.
                     let _ = unsafe { PostMessageW(Some(tray), msg, wparam, lparam) };
+                    ensure_first();
                 }
                 LRESULT(0)
             }
@@ -699,15 +799,27 @@ fn forward_send(msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
     let sent = unsafe {
         SendMessageTimeoutW(tray, msg, wparam, lparam, SMTO_ABORTIFHUNG, 4000, Some(&mut result as *mut usize))
     };
+    // Explorer re-raises its tray while handling some messages (an NIM_DELETE,
+    // for one). Without this, the app's next call (the NIM_ADD that follows a
+    // delete) would go straight to Explorer.
+    ensure_first();
     (sent.0 != 0).then_some(LRESULT(result as isize))
 }
 
-/// Handles a Shell_NotifyIcon payload. None when it is some other WM_COPYDATA,
-/// else whether the call succeeded for the host.
+/// What the host did with a Shell_NotifyIcon call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Outcome {
+    /// The call succeeded for the host.
+    ok: bool,
+    /// The call goes on to Explorer.
+    forward: bool,
+}
+
+/// Handles a Shell_NotifyIcon payload. None when it is some other WM_COPYDATA.
 ///
 /// # Safety
 /// `lparam` must be the COPYDATASTRUCT pointer of a WM_COPYDATA being handled.
-unsafe fn on_copydata(lparam: LPARAM) -> Option<bool> {
+unsafe fn on_copydata(lparam: LPARAM) -> Option<Outcome> {
     // SAFETY: the caller guarantees lparam is a live COPYDATASTRUCT.
     let cds = unsafe { (lparam.0 as *const COPYDATASTRUCT).as_ref() }?;
     if cds.dwData != COPYDATA_NOTIFY || cds.lpData.is_null() {
@@ -719,14 +831,41 @@ unsafe fn on_copydata(lparam: LPARAM) -> Option<bool> {
     // The handle is only guaranteed to live while the caller waits on this send,
     // so it is rendered now.
     let image = if msg.flags & NIF_ICON != 0 { render_icon(msg.hicon) } else { None };
+    if debug_log() {
+        eprintln!(
+            "lucent tray: {:?} cmd={} hwnd={:#x} uid={} flags={:#x} cb={:#x} icon={:#x}->{} guid={} ver={} state={:#x}/{:#x} tip={:?} owner={:?}",
+            Instant::now(),
+            msg.command,
+            msg.hwnd,
+            msg.uid,
+            msg.flags,
+            msg.callback,
+            msg.hicon,
+            image.is_some(),
+            msg.guid.is_some(),
+            msg.version,
+            msg.state,
+            msg.state_mask,
+            msg.tip,
+            owner_name(msg.hwnd)
+        );
+    }
     let applied = match store().as_mut() {
-        Some(store) => store.apply(&msg, image),
-        None => return Some(false),
+        Some(store) => {
+            let applied = store.apply(&msg, image);
+            store.fill_names(owner_name);
+            applied
+        }
+        None => return Some(Outcome { ok: false, forward: true }),
     };
     if applied.changed {
         emit_changed();
     }
-    Some(applied.ok)
+    let forward = msg.command != NIM_DELETE || {
+        let at = *BROADCAST_AT.lock().unwrap_or_else(PoisonError::into_inner);
+        forward_delete(applied.ok, at.map(|at| at.elapsed()))
+    };
+    Some(Outcome { ok: applied.ok, forward })
 }
 
 /// Renders a 32-bit HICON as a PNG data URL at its own size.
@@ -969,6 +1108,16 @@ mod tests {
     }
 
     #[test]
+    fn owner_names_fill_once() {
+        let mut store = Store::default();
+        store.apply(&msg(NIM_ADD, 0, ""), None);
+        assert!(store.fill_names(|_| Some("Discord".into())));
+        assert_eq!(store.views()[0].app, "Discord");
+        assert!(!store.fill_names(|_| Some("Other".into())));
+        assert_eq!(store.views()[0].app, "Discord");
+    }
+
+    #[test]
     fn dead_owners_are_dropped() {
         let mut store = Store::default();
         store.apply(&msg(NIM_ADD, 0, ""), None);
@@ -996,6 +1145,16 @@ mod tests {
         let (wp, _) = callback_params(4, 1, 0x201, -5, 10);
         assert_eq!(wp & 0xFFFF, 0xFFFB);
         assert_eq!(wp >> 16, 10);
+    }
+
+    #[test]
+    fn unknown_deletes_after_our_broadcast_stay_with_lucent() {
+        let soon = Some(Duration::from_secs(1));
+        let late = Some(BROADCAST_GRACE + Duration::from_secs(1));
+        assert!(!forward_delete(false, soon));
+        assert!(forward_delete(true, soon));
+        assert!(forward_delete(false, late));
+        assert!(forward_delete(false, None));
     }
 
     #[test]

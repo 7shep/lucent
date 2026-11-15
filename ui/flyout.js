@@ -1018,7 +1018,8 @@
         button = trayButton(icon.id);
         trayButtons.set(icon.id, button);
       }
-      const tip = typeof icon.tip === 'string' ? icon.tip : '';
+      const app = typeof icon.app === 'string' ? icon.app : '';
+      const tip = (typeof icon.tip === 'string' && icon.tip.trim()) || app;
       button.title = tip;
       button.setAttribute('aria-label', tip || 'Notification icon');
       const url = typeof icon.image === 'string' && icon.image.startsWith('data:image/png;base64,') ? icon.image : '';

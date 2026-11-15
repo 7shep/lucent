@@ -91,6 +91,9 @@ static SUPPRESSED: AtomicBool = AtomicBool::new(false);
 static NATIVE_TRAY: AtomicBool = AtomicBool::new(false);
 /// Registered message id for "TaskbarCreated" (Explorer restarted).
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+/// Explorer's primary `Shell_TrayWnd` when takeover last ran. TaskbarCreated
+/// with the same window is not a restart (Lucent's tray host broadcasts it too).
+static EXPLORER_TRAY: AtomicIsize = AtomicIsize::new(0);
 /// The shell thread's hidden watch window (0 = none) and that thread's id (0 = not started).
 /// restore() uses them to wait for in-flight callbacks to finish.
 static WATCH_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -347,6 +350,7 @@ fn take_over(app: &AppHandle) -> Result<(), String> {
     }
     save_state_once()?;
     apply_state(get_state() | ABS_AUTOHIDE)?;
+    EXPLORER_TRAY.store(primary_tray_bits(), Ordering::SeqCst);
 
     let window = dock_window(app)?;
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
@@ -712,6 +716,20 @@ fn set_trays_visible(visible: bool) {
     show_async(&tray_windows(), cmd);
 }
 
+/// Explorer's primary `Shell_TrayWnd`, as bits (0 when there is none).
+fn primary_tray_bits() -> isize {
+    tray_windows()
+        .into_iter()
+        .find(|hwnd| class_name(*hwnd).as_deref() == Some("Shell_TrayWnd"))
+        .map_or(0, hwnd_bits)
+}
+
+/// True when a TaskbarCreated means Explorer made a new taskbar, rather than
+/// someone (Lucent's tray host) asking apps to re-register.
+pub fn is_new_taskbar(previous: isize, current: isize) -> bool {
+    current != 0 && current != previous
+}
+
 /// True when a `Shell_TrayWnd` (the primary taskbar) exists.
 fn shell_tray_present() -> bool {
     tray_windows()
@@ -1012,6 +1030,13 @@ fn explorer_restarted(app: &AppHandle) {
     if !ACTIVE.load(Ordering::SeqCst) {
         return;
     }
+    let current = primary_tray_bits();
+    if !is_new_taskbar(EXPLORER_TRAY.load(Ordering::SeqCst), current) {
+        // Re-applying auto-hide would make Explorer re-raise its tray above the
+        // tray host while apps are re-registering.
+        return;
+    }
+    EXPLORER_TRAY.store(current, Ordering::SeqCst);
     NATIVE_TRAY.store(false, Ordering::SeqCst);
     set_trays_visible(false);
     if let Err(err) = apply_state(get_state() | ABS_AUTOHIDE) {
@@ -1105,7 +1130,7 @@ unsafe extern "system" fn on_tray_show(
     if !ACTIVE.load(Ordering::SeqCst) || NATIVE_TRAY.load(Ordering::SeqCst) {
         return;
     }
-    if class_name(hwnd).is_some_and(|name| is_shell_tray_class(&name)) {
+    if class_name(hwnd).is_some_and(|name| is_shell_tray_class(&name)) && !is_ours(hwnd) {
         show_async(&[hwnd], SW_HIDE);
     }
 }
@@ -1551,6 +1576,10 @@ mod tests {
     #[test]
     fn shell_tray_class_predicate_matches_only_the_taskbars() {
         assert!(is_shell_tray_class("Shell_TrayWnd"));
+        assert!(is_new_taskbar(0x10, 0x20));
+        assert!(is_new_taskbar(0, 0x20));
+        assert!(!is_new_taskbar(0x10, 0x10));
+        assert!(!is_new_taskbar(0x10, 0));
         assert!(is_shell_tray_class("Shell_SecondaryTrayWnd"));
         assert!(!is_shell_tray_class("Progman"));
         assert!(!is_shell_tray_class("Xaml_WindowedPopupClass"));
