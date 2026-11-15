@@ -223,6 +223,51 @@ body {
   color: var(--muted);
 }
 
+/* Timeline: hidden unless the island knows the track length (has-timeline). */
+
+.timeline {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.island.has-timeline .timeline {
+  display: flex;
+}
+
+.timeline-time {
+  flex: none;
+  min-width: 34px;
+  white-space: nowrap;
+}
+
+.timeline-time--end {
+  text-align: right;
+}
+
+.timeline-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--hover);
+  overflow: hidden;
+}
+
+.timeline-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--ink);
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform 0.25s linear;
+}
+
 .controls {
   display: flex;
   align-items: center;
@@ -295,7 +340,8 @@ body {
   .island,
   .collapsed,
   .card,
-  .btn {
+  .btn,
+  .timeline-fill {
     transition: none !important;
   }
 

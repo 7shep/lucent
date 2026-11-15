@@ -46,6 +46,12 @@ pub struct MediaState {
     pub app: Option<String>,
     /// `data:<mime>;base64,...` URL, or None.
     pub artwork: Option<String>,
+    /// Playback position in ms, as of `updated_at_ms`. None when unknown.
+    pub position_ms: Option<u64>,
+    /// Track length in ms. None when unknown or not positive.
+    pub duration_ms: Option<u64>,
+    /// Unix epoch ms at which `position_ms` was sampled. None when unknown.
+    pub updated_at_ms: Option<i64>,
 }
 
 impl MediaState {
@@ -58,8 +64,43 @@ impl MediaState {
             playing: self.playing,
             app: clean_text(self.app),
             artwork: clean(self.artwork),
+            position_ms: self.position_ms,
+            duration_ms: self.duration_ms,
+            updated_at_ms: self.updated_at_ms,
         }
     }
+}
+
+/// Windows timeline and clock units: 100 ns ticks.
+const TICKS_PER_MS: i64 = 10_000;
+/// Ticks from 1601-01-01 UTC (the WinRT DateTime epoch) to the Unix epoch.
+const UNIX_EPOCH_UNIVERSAL_TICKS: i64 = 116_444_736_000_000_000;
+
+/// Converts raw GSMTC timeline values (100 ns ticks) to milliseconds.
+/// Returns (position_ms, duration_ms, updated_at_ms). A duration that is not
+/// positive gives (None, None, None). The position is clamped to the track.
+/// `updated_at_ms` is None when `last_updated_universal` is not positive.
+pub fn timeline(
+    start_ticks: i64,
+    end_ticks: i64,
+    position_ticks: i64,
+    last_updated_universal: i64,
+) -> (Option<u64>, Option<u64>, Option<i64>) {
+    let duration = end_ticks.saturating_sub(start_ticks);
+    if duration <= 0 {
+        return (None, None, None);
+    }
+    let position = position_ticks.saturating_sub(start_ticks).clamp(0, duration);
+    let updated_at_ms = if last_updated_universal <= 0 {
+        None
+    } else {
+        Some((last_updated_universal - UNIX_EPOCH_UNIVERSAL_TICKS) / TICKS_PER_MS)
+    };
+    (
+        Some((position / TICKS_PER_MS) as u64),
+        Some((duration / TICKS_PER_MS) as u64),
+        updated_at_ms,
+    )
 }
 
 fn clean(value: Option<String>) -> Option<String> {
@@ -210,6 +251,7 @@ struct Subscription {
     session: Session,
     media: Option<i64>,
     playback: Option<i64>,
+    timeline: Option<i64>,
 }
 
 struct Monitor {
@@ -288,11 +330,19 @@ impl Monitor {
                 Ok(())
             }))
             .ok();
+        let tx_timeline = self.tx.clone();
+        let timeline = session
+            .TimelinePropertiesChanged(&TypedEventHandler::new(move |_sender, _args| {
+                let _ = tx_timeline.send(Msg::StateChanged);
+                Ok(())
+            }))
+            .ok();
 
         self.sub = Some(Subscription {
             session,
             media,
             playback,
+            timeline,
         });
     }
 
@@ -303,6 +353,9 @@ impl Monitor {
             }
             if let Some(token) = sub.playback {
                 let _ = sub.session.RemovePlaybackInfoChanged(token);
+            }
+            if let Some(token) = sub.timeline {
+                let _ = sub.session.RemoveTimelinePropertiesChanged(token);
             }
         }
     }
@@ -380,6 +433,10 @@ fn read_session(session: &Session) -> WinResult<MediaState> {
         .and_then(|thumb| read_thumbnail(&thumb))
         .and_then(|(mime, bytes)| artwork_data_url(&mime, &bytes));
 
+    let (position_ms, duration_ms, updated_at_ms) = read_timeline(session)
+        .map(|(start, end, position, updated)| timeline(start, end, position, updated))
+        .unwrap_or((None, None, None));
+
     Ok(MediaState {
         title: props.Title().ok().map(|s| s.to_string()),
         artist: props.Artist().ok().map(|s| s.to_string()),
@@ -387,8 +444,22 @@ fn read_session(session: &Session) -> WinResult<MediaState> {
         playing,
         app,
         artwork,
+        position_ms,
+        duration_ms,
+        updated_at_ms,
     }
     .cleaned())
+}
+
+/// Raw timeline values in ticks: (start, end, position, last updated
+/// universal time). Any failure gives None.
+fn read_timeline(session: &Session) -> Option<(i64, i64, i64, i64)> {
+    let tl = session.GetTimelineProperties().ok()?;
+    let start = tl.StartTime().ok()?.Duration;
+    let end = tl.EndTime().ok()?.Duration;
+    let position = tl.Position().ok()?.Duration;
+    let updated = tl.LastUpdatedTime().ok()?.UniversalTime;
+    Some((start, end, position, updated))
 }
 
 /// Reads thumbnail bytes and their MIME type. The stream's own content type
@@ -419,13 +490,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn media_state_has_exactly_the_six_keys() {
+    fn media_state_has_exactly_the_nine_keys() {
         let value = serde_json::to_value(MediaState::default()).unwrap();
         let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         assert_eq!(
             keys,
-            vec!["album", "app", "artist", "artwork", "playing", "title"]
+            vec![
+                "album",
+                "app",
+                "artist",
+                "artwork",
+                "duration_ms",
+                "playing",
+                "position_ms",
+                "title",
+                "updated_at_ms"
+            ]
         );
     }
 
@@ -438,6 +519,9 @@ mod tests {
             playing: true,
             app: Some("".into()),
             artwork: Some("".into()),
+            position_ms: Some(5_000),
+            duration_ms: Some(180_000),
+            updated_at_ms: Some(1_700_000_000_000),
         }
         .cleaned();
         assert_eq!(state.title, None);
@@ -446,6 +530,58 @@ mod tests {
         assert_eq!(state.app, None);
         assert_eq!(state.artwork, None);
         assert!(state.playing);
+        assert_eq!(state.position_ms, Some(5_000));
+        assert_eq!(state.duration_ms, Some(180_000));
+        assert_eq!(state.updated_at_ms, Some(1_700_000_000_000));
+    }
+
+    // 1 s = 10_000_000 ticks. Universal time 116_444_736_000_000_000 is the Unix epoch.
+
+    #[test]
+    fn timeline_normal_case() {
+        // Track starts at 1 s and ends at 214 s (213 s long). Position is at 61 s,
+        // i.e. 60 s into the track. Sampled 1_234_567 ms after the Unix epoch.
+        let got = timeline(
+            10_000_000,
+            2_140_000_000,
+            610_000_000,
+            116_444_736_000_000_000 + 12_345_670_000,
+        );
+        assert_eq!(got, (Some(60_000), Some(213_000), Some(1_234_567)));
+    }
+
+    #[test]
+    fn timeline_zero_or_negative_duration_is_all_none() {
+        let universal = 116_444_736_000_000_000 + 10_000_000;
+        assert_eq!(timeline(5_000_000, 5_000_000, 0, universal), (None, None, None));
+        assert_eq!(timeline(5_000_000, 1_000_000, 0, universal), (None, None, None));
+    }
+
+    #[test]
+    fn timeline_position_before_start_clamps_to_zero() {
+        let got = timeline(10_000_000, 20_000_000, 2_000_000, 116_444_736_000_000_000);
+        assert_eq!(got.0, Some(0));
+        assert_eq!(got.1, Some(1_000));
+    }
+
+    #[test]
+    fn timeline_position_past_end_clamps_to_duration() {
+        let got = timeline(0, 30_000_000, 90_000_000, 116_444_736_000_000_000);
+        assert_eq!(got.0, Some(3_000));
+        assert_eq!(got.1, Some(3_000));
+    }
+
+    #[test]
+    fn timeline_epoch_converts_to_zero() {
+        let got = timeline(0, 10_000_000, 0, 116_444_736_000_000_000);
+        assert_eq!(got.2, Some(0));
+    }
+
+    #[test]
+    fn timeline_universal_zero_gives_no_updated_at() {
+        let got = timeline(0, 10_000_000, 5_000_000, 0);
+        assert_eq!(got, (Some(500), Some(1_000), None));
+        assert_eq!(timeline(0, 10_000_000, 5_000_000, -1).2, None);
     }
 
     #[test]

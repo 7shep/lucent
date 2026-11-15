@@ -1,10 +1,12 @@
 // Lucent island: shows the Windows media session and drives the island window size.
-// Event-driven. The only timer is a one-shot timeout for the auto-peek.
+// Event-driven. Timers: a one-shot timeout for the auto-peek, and a progress
+// tick for the timeline that runs only while the card is expanded and playing.
 (function () {
   'use strict';
 
   const PEEK_MS = 3000;
   const SHRINK_FALLBACK_MS = 600;
+  const TIMELINE_TICK_MS = 250;
   const tauri = window.__TAURI__;
   const island = document.getElementById('island');
   const el = {
@@ -14,6 +16,10 @@
     img: document.getElementById('img'),
     title: document.getElementById('title'),
     artist: document.getElementById('artist'),
+    elapsed: document.getElementById('elapsed'),
+    remaining: document.getElementById('remaining'),
+    track: document.getElementById('track'),
+    fill: document.getElementById('fill'),
     prev: document.getElementById('prev'),
     toggle: document.getElementById('toggle'),
     next: document.getElementById('next')
@@ -25,8 +31,11 @@
     pendingShrink: false,
     shrinkTimer: 0,
     peekTimer: 0,
-    lastTitle: null
+    lastTitle: null,
+    // Last sample from the backend. position is in ms as of updatedAt (epoch ms).
+    timeline: { position: 0, duration: null, updatedAt: 0, playing: false }
   };
+  let timelineTimer = 0;
 
   // Window resizes run one at a time, in order.
   let resizeChain = Promise.resolve();
@@ -52,6 +61,50 @@
       .some((d) => parseFloat(d) > 0);
   }
 
+  // Current playhead in ms. Extrapolates from the last sample while playing.
+  function timelinePositionMs(tl, now) {
+    let pos = tl.position;
+    if (tl.playing) pos += now - tl.updatedAt;
+    return Math.min(Math.max(pos, 0), tl.duration);
+  }
+
+  // m:ss, or h:mm:ss from one hour up.
+  function formatTime(ms) {
+    const secs = Math.floor(Math.max(ms, 0) / 1000);
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = String(secs % 60).padStart(2, '0');
+    return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + s : m + ':' + s;
+  }
+
+  // Draws the timeline from the last sample. Hidden when the length is unknown.
+  function renderTimeline() {
+    const tl = state.timeline;
+    const total = tl.duration;
+    island.classList.toggle('has-timeline', total !== null);
+    if (total === null) return;
+    const pos = timelinePositionMs(tl, Date.now());
+    const elapsed = formatTime(pos);
+    el.fill.style.transform = 'scaleX(' + pos / total + ')';
+    el.elapsed.textContent = elapsed;
+    el.remaining.textContent = '-' + formatTime(total - pos);
+    el.track.setAttribute('aria-valuemax', String(total));
+    el.track.setAttribute('aria-valuenow', String(Math.round(pos)));
+    el.track.setAttribute('aria-valuetext', elapsed + ' of ' + formatTime(total));
+  }
+
+  // The only timeline timer. Runs while the card is open and a track is playing.
+  // Started and stopped from expand, collapse and render.
+  function syncTimeline() {
+    const active = state.expanded && state.timeline.playing && state.timeline.duration !== null;
+    if (active && !timelineTimer) {
+      timelineTimer = setInterval(renderTimeline, TIMELINE_TICK_MS);
+    } else if (!active && timelineTimer) {
+      clearInterval(timelineTimer);
+      timelineTimer = 0;
+    }
+  }
+
   // Window grows first, then the pill animates into the new space.
   function expand() {
     if (state.expanded) return;
@@ -59,6 +112,8 @@
     state.pendingShrink = false;
     clearTimeout(state.shrinkTimer);
     state.shrinkTimer = 0;
+    renderTimeline();
+    syncTimeline();
     resizeWindow(true).then(() => {
       if (state.expanded) island.classList.add('expanded');
     });
@@ -68,6 +123,7 @@
   function collapse() {
     if (!state.expanded) return;
     state.expanded = false;
+    syncTimeline();
     const wasShown = island.classList.contains('expanded');
     island.classList.remove('expanded');
     if (wasShown && transitionsEnabled()) {
@@ -137,6 +193,16 @@
 
     const changed = title !== state.lastTitle;
     state.lastTitle = title;
+
+    const tl = state.timeline;
+    tl.duration = typeof media.duration_ms === 'number' && media.duration_ms > 0 ? media.duration_ms : null;
+    tl.position = typeof media.position_ms === 'number' ? media.position_ms : 0;
+    // Without a sample time, the time this update arrived is the best guess.
+    tl.updatedAt = typeof media.updated_at_ms === 'number' ? media.updated_at_ms : Date.now();
+    tl.playing = playing;
+    renderTimeline();
+    syncTimeline();
+
     if (announce && changed && title) peek();
   }
 

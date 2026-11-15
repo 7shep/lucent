@@ -5,7 +5,7 @@ Liquid-glass shell customizations for Windows 11 — starting with a Dynamic-Isl
 ## Features
 
 - Dynamic-Island-style "now playing" pill at the top centre of the screen, showing the current Windows media session (artwork, equaliser while playing).
-- Hover to expand: artwork, title, artist, and previous / play-pause / next controls.
+- Hover to expand: artwork, title, artist, a playback timeline (elapsed, remaining, progress bar), and previous / play-pause / next controls. The timeline advances only while the card is open and a track is playing.
 - Briefly expands when the track changes.
 - Event-driven and light on resources: the media monitor blocks until Windows reports a change, so there is no polling and idle CPU stays near zero.
 - `lucent.exe --print-media` prints the current media state as one line of JSON and exits.
