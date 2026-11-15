@@ -1,0 +1,666 @@
+/* Lucent flyout: one page, four panels. The window is the open panel plus 24 px
+   on every side, so each panel sits at 24,24 and is exactly its spec size.
+   The spring (scale .12 + 24 px down -> identity) is driven by the .open class;
+   the transform origin is set from JS to the clicked taskbar icon. */
+
+#stage {
+  position: fixed;
+  inset: 0;
+}
+
+.panel {
+  position: absolute;
+  left: 24px;
+  top: 24px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px 16px;
+  border-radius: 24px;
+  transform-origin: 50% 100%;
+  transform: translateY(24px) scale(0.12);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--spring-ms) var(--spring),
+    opacity var(--fade-ms) var(--ease);
+}
+
+.panel.open {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Switching panels: the old one is removed without a spring. */
+.panel.snap {
+  transition: none;
+}
+
+#p-start {
+  width: 440px;
+  height: 600px;
+}
+
+#p-search {
+  width: 440px;
+  height: 420px;
+}
+
+#p-quick_settings {
+  width: 300px;
+  height: 300px;
+}
+
+/* Two stacked cards with no panel background of their own. */
+#p-notifications {
+  width: 320px;
+  height: 480px;
+  padding: 0;
+  gap: 10px;
+  overflow: visible;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel,
+  .panel.open {
+    transform: none;
+  }
+
+  .panel {
+    transition: opacity var(--fade-ms) linear;
+  }
+}
+
+/* Shared bits ---------------------------------------------------------------- */
+
+.hd-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 2px 6px;
+  min-height: 18px;
+  gap: 8px;
+}
+
+/* The one scrolling region of a panel. Bounded by the flex column, so nothing
+   runs under the footer. The scrollbar is thin and faint. */
+.scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 -16px;
+  padding: 0 16px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 3px;
+}
+
+.foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: auto -16px -14px;
+  padding: 10px 16px;
+  min-height: 40px;
+  background: var(--foot);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+}
+
+.foot .sm {
+  font-size: 11px;
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.avatar {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.icon-btn {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  transition: background var(--fade-ms) var(--ease);
+}
+
+.icon-btn:hover {
+  background: var(--hover);
+}
+
+.wide-btn {
+  width: 100%;
+  height: 32px;
+  margin-top: 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  font-size: 12px;
+}
+
+.wide-btn:hover {
+  background: var(--lit);
+}
+
+.card {
+  border-radius: 20px;
+  padding: 12px 14px;
+}
+
+.card.cal-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Start ---------------------------------------------------------------------- */
+
+/* Home is a column: the fixed block, then All apps, which takes the rest. */
+#start-home {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.start-fixed {
+  flex: none;
+}
+
+#start-home[hidden],
+#start-results[hidden] {
+  display: none;
+}
+
+#start-results {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.pins {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px 2px;
+}
+
+.pin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 0;
+  border-radius: 10px;
+}
+
+.pin:hover {
+  background: var(--hover);
+}
+
+.pin .lbl {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 12px;
+}
+
+.recent .row {
+  padding: 5px 2px;
+}
+
+.recent .txt {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.recent .row-name {
+  font-size: 12px;
+}
+
+.cats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.cat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.cat-tile {
+  width: 100%;
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: inset 0 1px 0 var(--card-hi);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  justify-items: center;
+}
+
+.cat-tile .ico-wrap {
+  width: 22px;
+  height: 22px;
+}
+
+.cat .lbl {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cat-back {
+  margin-bottom: 4px;
+}
+
+.applist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Results (start search mode and the search panel) -------------------------- */
+
+.results {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 12px;
+  margin-top: 12px;
+  min-height: 0;
+}
+
+#search-results {
+  flex: 1 1 auto;
+}
+
+.res-best {
+  align-self: start;
+  min-width: 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.res-best .tile {
+  margin-top: 2px;
+}
+
+.res-name {
+  max-width: 100%;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.res-best .glyph-big {
+  width: 26px;
+  height: 26px;
+}
+
+.pill-col {
+  width: 100%;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pill-btn {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.pill-btn:hover {
+  background: var(--lit);
+}
+
+.res-side {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.res-side::-webkit-scrollbar {
+  display: none;
+}
+
+.sec-label {
+  margin: 8px 6px 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sec-label:first-child {
+  margin-top: 0;
+}
+
+.res-side .row {
+  margin-bottom: 1px;
+}
+
+/* Quick settings ------------------------------------------------------------- */
+
+.qs-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.qs-grid[hidden] {
+  display: none;
+}
+
+.tg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tg[hidden] {
+  display: none;
+}
+
+.tgb {
+  position: relative;
+  width: 100%;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transition:
+    background var(--fade-ms) var(--ease),
+    color var(--fade-ms) var(--ease);
+}
+
+.tgb .g {
+  width: 18px;
+  height: 18px;
+}
+
+.tgb .arrow {
+  position: absolute;
+  right: 5px;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+  opacity: 0.55;
+}
+
+.tg:hover .tgb {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.tg.act .tgb {
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--on-ink);
+}
+
+.tg .lbl {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.sl[hidden] {
+  display: none;
+}
+
+.sl > .g {
+  width: 18px;
+  height: 18px;
+}
+
+.sl-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+}
+
+.sl-btn:hover {
+  background: var(--hover);
+}
+
+.sl-btn .g {
+  width: 17px;
+  height: 17px;
+}
+
+.track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-radius: 2px;
+  background: #fff;
+}
+
+.knob {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.sl.muted .fill {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.sl.muted .knob {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+/* Calendar ------------------------------------------------------------------- */
+
+.cal-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.nav-btns {
+  display: flex;
+  gap: 2px;
+}
+
+.nav-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+}
+
+.nav-btn:hover {
+  background: var(--hover);
+}
+
+.nav-btn .g {
+  width: 14px;
+  height: 14px;
+}
+
+.cal {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-auto-rows: 28px;
+  gap: 2px;
+  align-content: start;
+  text-align: center;
+  font-size: 11px;
+}
+
+.cal .wk {
+  height: 22px;
+  line-height: 22px;
+  color: var(--muted);
+}
+
+.cal .d {
+  height: 26px;
+  line-height: 26px;
+  border-radius: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cal .d.today {
+  background: #fff;
+  color: var(--on-ink);
+  font-weight: 500;
+}
+
+/* Menu ----------------------------------------------------------------------- */
+
+/* A menu floats over panel content, so it gets a stronger tint than the panels
+   to keep its labels readable. */
+.menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 170px;
+  padding: 6px;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menu::before {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.02) 40%, rgba(255, 255, 255, 0) 60%),
+    rgba(18, 20, 28, 0.42);
+}
+
+.menu-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menu-item {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--hover);
+}
+
+/* Confirm step: the item asks again, and a second click runs it. */
+.menu-item.armed {
+  background: var(--lit);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26);
+  font-weight: 500;
+}

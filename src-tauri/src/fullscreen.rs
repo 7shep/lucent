@@ -33,6 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::island::{self, Screen};
+use crate::shell;
 
 /// Coalescing window for bursts of events.
 const DEBOUNCE_MS: u32 = 150;
@@ -119,6 +120,17 @@ pub fn covers(window: RECT, monitor: RECT) -> bool {
 /// covering windows do. Exclusive D3D fullscreen is decided separately.
 pub fn looks_fullscreen(covers: bool, zoomed: bool, has_caption: bool) -> bool {
     covers && !(zoomed && has_caption)
+}
+
+/// Whether the dock should be hidden, given the foreground window and the primary
+/// monitor. Only a fullscreen window on the primary monitor hides it. `None`
+/// means leave the dock as it is (our own windows are foreground).
+pub fn dock_wanted(fg: Fg, primary: Screen) -> Option<bool> {
+    match fg {
+        Fg::Ours => None,
+        Fg::Other => Some(false),
+        Fg::Fullscreen(rect) => Some(same_rect(rect, &primary)),
+    }
 }
 
 /// True when the monitor rect matches the screen's position and size.
@@ -319,6 +331,12 @@ fn apply(app: &AppHandle) {
         }
     };
     let fg = unsafe { foreground_kind() };
+    // The dock hides while a fullscreen app covers the primary monitor.
+    if let Some(primary_screen) = screens.get(primary_index) {
+        if let Some(suppressed) = dock_wanted(fg, *primary_screen) {
+            shell::set_dock_suppressed(app, suppressed);
+        }
+    }
     if let Some(next) = decide(fg, &screens, primary_index, current) {
         if let Err(err) = island::set_target(app, next) {
             eprintln!("lucent: fullscreen placement failed: {err}");
@@ -606,5 +624,36 @@ mod tests {
     #[test]
     fn covers_is_false_for_a_window_on_another_monitor() {
         assert!(!covers(rect(1920, 0, 3840, 1080), rect(0, 0, 1920, 1080)));
+    }
+
+    #[test]
+    fn dock_hides_for_fullscreen_on_the_primary() {
+        assert_eq!(
+            dock_wanted(Fg::Fullscreen(rect(0, 0, 1920, 1080)), screen(0)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn dock_stays_for_fullscreen_on_a_secondary() {
+        assert_eq!(
+            dock_wanted(Fg::Fullscreen(rect(1920, 0, 3840, 1080)), screen(0)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn dock_shows_for_ordinary_and_unknown_foregrounds() {
+        assert_eq!(dock_wanted(Fg::Other, screen(0)), Some(false));
+        // A fullscreen rect that only partly covers the primary is not busy.
+        assert_eq!(
+            dock_wanted(Fg::Fullscreen(rect(0, 0, 1280, 720)), screen(0)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn dock_is_left_alone_when_our_own_window_is_foreground() {
+        assert_eq!(dock_wanted(Fg::Ours, screen(0)), None);
     }
 }

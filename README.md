@@ -34,6 +34,30 @@ Tests:
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+## Install
+
+Builds the release exe and installs it for the current user (`%LOCALAPPDATA%\Programs\Lucent`), adds a Start Menu shortcut, enables start with Windows, and starts Lucent:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+Remove it again with `-Uninstall`, which also puts the taskbar back:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Uninstall
+```
+
+## Recovery
+
+Lucent hides the Windows taskbar while it runs and puts it back on exit. If Lucent was killed or crashed and the taskbar is still hidden, run:
+
+```
+lucent.exe --restore-taskbar
+```
+
+It works with no other Lucent process running. It restores the taskbar's auto-hide setting from `%APPDATA%\Lucent\taskbar-state.json` and deletes that file. With no state file, it only shows the taskbar and leaves the auto-hide setting alone. Lucent refuses to take over while that file is unreadable, so delete it by hand only after the taskbar is visible again.
+
 ## Roadmap
 
 - Liquid-glass dock

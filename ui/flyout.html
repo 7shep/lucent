@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Lucent</title>
+  <link rel="stylesheet" href="glass.css">
+  <link rel="stylesheet" href="flyout.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a13 13 0 0 1 19 0"/><path d="M5.5 12.5a8.5 8.5 0 0 1 13 0"/><path d="M8.7 16a4 4 0 0 1 6.6 0"/><circle cx="12" cy="19.5" r="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-ethernet" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="11" rx="2"/><path d="M9 14v3.5h6V14M12 17.5V21"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="i-chev-up" viewBox="0 0 24 24"><path d="M6 14.5l6-6 6 6"/></symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></symbol>
+    <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="M14.5 6l-6 6 6 6"/></symbol>
+    <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.7 6.9a8 8 0 1 0 10.6 0"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M2.8 12h2.4M18.8 12h2.4M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+    <symbol id="i-night" viewBox="0 0 24 24"><path d="M3 16h18"/><path d="M6.5 16a5.5 5.5 0 0 1 11 0"/><path d="M12 5v3M5.5 8.5l2 2M18.5 8.5l-2 2"/></symbol>
+    <symbol id="i-plane" viewBox="0 0 24 24"><path d="M11 3.5h2v6.2l6.5 3.6v2L13 13.6V18l2.5 1.6V21L12 20.2 8.5 21v-1.4L11 18v-4.4l-6.5 1.8v-2L11 9.7z"/></symbol>
+    <symbol id="i-cast" viewBox="0 0 24 24"><path d="M3 8V6.5A2.5 2.5 0 0 1 5.5 4h13A2.5 2.5 0 0 1 21 6.5v11a2.5 2.5 0 0 1-2.5 2.5H13"/><path d="M3 11.5a8 8 0 0 1 8 8M3 15.5a4 4 0 0 1 4 4"/><circle cx="3.5" cy="19.5" r="0.9" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-bluetooth" viewBox="0 0 24 24"><path d="M7 7.5l10 9-5 4.5V3l5 4.5-10 9"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17L17 7M9 7h8v8"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M7 8h10v2.5a5 5 0 0 1-10 0z"/><path d="M12 15.5V21"/></symbol>
+    <symbol id="i-battery" viewBox="0 0 24 24"><rect x="3" y="7" width="16" height="10" rx="2"/><path d="M21 10.5v3"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3z"/><path d="M12 13v8"/></symbol>
+  </svg>
+
+  <main id="stage">
+    <!-- Start: pins, recent, all apps by category, footer. Typing swaps in results. -->
+    <section id="p-start" class="panel glass" role="dialog" aria-label="Start" data-panel="start">
+      <div class="fld">
+        <svg class="g" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="start-q" type="text" placeholder="Search apps, settings, and files" aria-label="Search apps, settings, and files" autocomplete="off" spellcheck="false">
+      </div>
+      <!-- Home: Pinned and Recent stay put. Only All apps scrolls. -->
+      <div id="start-home" class="start-home">
+        <div class="start-fixed">
+          <div class="hd-row"><span class="hd">Pinned</span></div>
+          <div id="pins" class="pins"></div>
+          <div class="hr"></div>
+          <div class="hd-row"><span class="hd">Recent</span></div>
+          <div id="recent" class="recent"></div>
+          <div class="hr"></div>
+          <div class="hd-row"><span class="hd">All apps</span><span class="sm">Category</span></div>
+        </div>
+        <div id="all-scroll" class="scroll">
+          <div id="cats" class="cats"></div>
+          <div id="cat-view" hidden>
+            <button id="cat-back" class="row cat-back" type="button"><svg class="g" aria-hidden="true"><use href="#i-chev-left"/></svg><span id="cat-name" class="hd ellipsis"></span></button>
+            <div id="cat-list" class="applist"></div>
+          </div>
+        </div>
+      </div>
+      <!-- Search results replace the home while typing. -->
+      <div id="start-results" class="scroll" hidden></div>
+      <div class="foot">
+        <div class="who">
+          <span class="avatar"><img id="avatar" alt="" hidden><svg id="avatar-glyph" class="g g-sm" aria-hidden="true"><use href="#i-user"/></svg></span>
+          <span id="user-name" class="ellipsis"></span>
+        </div>
+        <button id="power-btn" class="icon-btn" type="button" aria-label="Power" aria-haspopup="menu"><svg class="g" aria-hidden="true"><use href="#i-power"/></svg></button>
+      </div>
+    </section>
+
+    <!-- Search: a focused field, best match, apps, files, web. -->
+    <section id="p-search" class="panel glass" role="dialog" aria-label="Search" data-panel="search">
+      <div class="fld">
+        <svg class="g" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="search-q" type="text" placeholder="Search apps, settings, and files" aria-label="Search apps, settings, and files" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="search-results" class="results"></div>
+    </section>
+
+    <!-- Quick settings: toggles and shortcut tiles, sliders, status and gear. -->
+    <section id="p-quick_settings" class="panel glass" role="dialog" aria-label="Quick settings" data-panel="quick_settings">
+      <div class="qs-grid">
+        <button id="qs-wifi" class="tg" type="button" aria-pressed="false" hidden><span class="tgb"><svg class="g" aria-hidden="true"><use href="#i-wifi"/></svg></span><span id="qs-wifi-label" class="lbl ellipsis">Wi-Fi</span></button>
+        <button id="qs-bt" class="tg" type="button" aria-pressed="false" hidden><span class="tgb"><svg class="g" aria-hidden="true"><use href="#i-bluetooth"/></svg></span><span class="lbl ellipsis">Bluetooth</span></button>
+        <button id="qs-focus" class="tg" type="button"><span class="tgb"><svg class="g" aria-hidden="true"><use href="#i-moon"/></svg><svg class="arrow g" aria-hidden="true"><use href="#i-arrow"/></svg></span><span class="lbl ellipsis">Focus</span></button>
+        <button id="qs-night" class="tg" type="button"><span class="tgb"><svg class="g" aria-hidden="true"><use href="#i-night"/></svg><svg class="arrow g" aria-hidden="true"><use href="#i-arrow"/></svg></span><span class="lbl ellipsis">Night light</span></button>
+        <button id="qs-air" class="tg" type="button"><span class="tgb"><svg class="g" aria-hidden="true"><use href="#i-plane"/></svg><svg class="arrow g" aria-hidden="true"><use href="#i-arrow"/></svg></span><span class="lbl ellipsis">Airplane</span></button>
+        <button id="qs-cast" class="tg" type="button"><span class="tgb"><svg class="g" aria-hidden="true"><use href="#i-cast"/></svg><svg class="arrow g" aria-hidden="true"><use href="#i-arrow"/></svg></span><span class="lbl ellipsis">Cast</span></button>
+      </div>
+      <div id="row-bright" class="sl" hidden>
+        <svg class="g" aria-hidden="true"><use href="#i-sun"/></svg>
+        <div id="bright" class="track" role="slider" tabindex="0" aria-label="Brightness" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-value="0">
+          <div class="rail"><div class="fill"></div></div>
+          <div class="knob"></div>
+        </div>
+      </div>
+      <div id="row-vol" class="sl" hidden>
+        <button id="vol-btn" class="sl-btn" type="button" aria-label="Mute"><svg class="g" aria-hidden="true"><use href="#i-volume"/></svg></button>
+        <div id="vol" class="track" role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-value="0">
+          <div class="rail"><div class="fill"></div></div>
+          <div class="knob"></div>
+        </div>
+      </div>
+      <div class="foot">
+        <span id="qs-status" class="sm" hidden><span id="qs-status-text"></span></span>
+        <button id="qs-settings" class="icon-btn" type="button" aria-label="Settings"><svg class="g" aria-hidden="true"><use href="#i-gear"/></svg></button>
+      </div>
+    </section>
+
+    <!-- Notifications: a card with the notification centre button, and the calendar card. -->
+    <section id="p-notifications" class="panel" role="dialog" aria-label="Notifications and calendar" data-panel="notifications" data-multi="1">
+      <div class="card glass">
+        <div class="hd-row"><span class="hd">Notifications</span></div>
+        <button id="ntf-open" class="wide-btn" type="button">Open notification centre</button>
+      </div>
+      <div class="card glass cal-card">
+        <div class="hd-row"><span id="cal-today" class="hd"></span></div>
+        <div class="cal-nav">
+          <span id="cal-month" class="sm"></span>
+          <span class="nav-btns">
+            <button id="cal-prev" class="nav-btn" type="button" aria-label="Previous month"><svg class="g" aria-hidden="true"><use href="#i-chev-left"/></svg></button>
+            <button id="cal-next" class="nav-btn" type="button" aria-label="Next month"><svg class="g" aria-hidden="true"><use href="#i-chev-right"/></svg></button>
+          </span>
+        </div>
+        <div id="cal" class="cal"></div>
+      </div>
+    </section>
+
+    <!-- Small glass menu (power, pin/unpin). Shown inside the open panel. -->
+    <div id="menu" class="menu glass" role="menu" hidden><div id="menu-items" class="menu-items"></div></div>
+  </main>
+
+  <script src="flyout.js"></script>
+</body>
+</html>

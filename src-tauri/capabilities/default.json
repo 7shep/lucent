@@ -1,5 +1,14 @@
 {
   "identifier": "default",
-  "windows": ["island"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+  "windows": [
+    "island",
+    "dock",
+    "flyout"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:window:allow-hide"
+  ]
 }

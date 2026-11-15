@@ -21,7 +21,39 @@
         "shadow": false,
         "visible": false,
         "focus": false,
+        "focusable": false,
+        "url": "index.html"
+      },
+      {
+        "label": "dock",
+        "title": "Lucent Dock",
+        "url": "dock.html",
+        "width": 1280,
+        "height": 104,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "focus": false,
         "focusable": false
+      },
+      {
+        "label": "flyout",
+        "title": "Lucent",
+        "url": "flyout.html",
+        "width": 480,
+        "height": 640,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "focus": true
       }
     ],
     "security": {
@@ -31,6 +63,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.ico"]
+    "icon": [
+      "icons/icon.ico"
+    ]
   }
 }

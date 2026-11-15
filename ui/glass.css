@@ -1,0 +1,382 @@
+/* Lucent glass: shared tokens, reset, the glass surface and common parts.
+   The glass is pure CSS. Each glass surface holds a backdrop layer (.bd) that
+   paints the desktop wallpaper behind it, offset so it lines up with the
+   monitor, then blurs it. The layer is wider than the monitor by --bd-pad on
+   each side so the blur does not fade at the edges. Above the layer: the smoky
+   tint and top shine (::before), then the inner edge highlights (::after).
+   The page JS sets the layer geometry and the image. No style attributes and
+   no inline scripts (CSP). */
+
+:root {
+  color-scheme: dark;
+  --ink: #f2f2f7;
+  --muted: rgba(240, 240, 248, 0.6);
+  --dim: rgba(240, 240, 248, 0.38);
+  --sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui,
+    -apple-system, sans-serif;
+  --spring: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --spring-ms: 550ms;
+  --fade-ms: 180ms;
+  --tile: rgba(255, 255, 255, 0.11);
+  --tile-hi: rgba(255, 255, 255, 0.2);
+  --well: rgba(0, 0, 0, 0.22);
+  --card: rgba(255, 255, 255, 0.07);
+  --card-hi: rgba(255, 255, 255, 0.14);
+  --lit: rgba(255, 255, 255, 0.18);
+  --hover: rgba(255, 255, 255, 0.1);
+  --foot: rgba(0, 0, 0, 0.16);
+  --hair: rgba(255, 255, 255, 0.14);
+  --on-ink: #1a1a22;
+  --red: #ff5a5f;
+  --bd-pad: 80px; /* the backdrop layer extends this far past the monitor */
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: var(--sans);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: inherit;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+button:focus {
+  outline: none;
+}
+
+button:focus-visible,
+.track:focus-visible {
+  outline: 1.5px solid rgba(255, 255, 255, 0.7);
+  outline-offset: 2px;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Hidden symbol sprite for the UI glyphs (no icon font). */
+.sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* The glass surface. Pages set its position (absolute or fixed) and its radius.
+   The surface clips its backdrop to its own rounded corners. */
+.glass {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  color: var(--ink);
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+}
+
+/* Tint and top shine, above the backdrop layer. */
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.02) 40%, rgba(255, 255, 255, 0) 60%),
+    rgba(24, 24, 32, 0.34);
+}
+
+/* Inner edge highlights, over the content. */
+.glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    inset 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px 0 0 rgba(255, 255, 255, 0.08);
+}
+
+/* Backdrop layer: sized and offset by the page JS. It is the monitor plus
+   --bd-pad on every side, filled with the desktop colour, blurred. The image
+   sits in .bd-img, which is exactly the monitor, so it is laid out the way
+   Windows lays out the wallpaper. */
+/* The layer's own image (JS sets it for fill, span and stretch only) is the
+   wallpaper stretched over the whole layer. It is hidden under .bd-img except in
+   the margin, so the blur near the monitor edges takes its colour from the
+   wallpaper and not from the dark desktop colour. */
+.bd {
+  position: absolute;
+  z-index: -2;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  filter: blur(40px) saturate(1.4);
+}
+
+.bd-img {
+  position: absolute;
+  inset: var(--bd-pad);
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+.bd-img[data-style="fill"],
+.bd-img[data-style="span"] {
+  background-size: cover;
+}
+
+.bd-img[data-style="fit"] {
+  background-size: contain;
+}
+
+.bd-img[data-style="stretch"] {
+  background-size: 100% 100%;
+}
+
+.bd-img[data-style="tile"] {
+  background-size: auto;
+  background-repeat: repeat;
+  background-position: 0 0;
+}
+
+.bd-img[data-style="center"] {
+  background-size: auto;
+}
+
+/* UI glyphs: inline SVG symbols, stroked with currentColor. */
+svg.g {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+svg.g-sm {
+  width: 14px;
+  height: 14px;
+}
+
+.hd {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sm {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.lbl {
+  font-size: 11px;
+  line-height: 1.2;
+  color: rgba(240, 240, 248, 0.88);
+  text-align: center;
+}
+
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hr {
+  height: 0.5px;
+  background: var(--hair);
+  margin: 10px 0;
+}
+
+/* App icons: the real icon from get_icon, with a letter when there is none. */
+.tile {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--tile);
+  box-shadow: inset 0 1px 0 var(--tile-hi);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.tile.xs {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+}
+
+.tile.lg {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+}
+
+.ico-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+
+.tile .ico-wrap {
+  width: 22px;
+  height: 22px;
+}
+
+.tile.xs .ico-wrap {
+  width: 20px;
+  height: 20px;
+}
+
+.tile.lg .ico-wrap {
+  width: 36px;
+  height: 36px;
+}
+
+.ico-wrap > * {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+}
+
+.ico {
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+.ico-fb {
+  display: grid;
+  place-items: center;
+  border-radius: 25%;
+  background: rgba(255, 255, 255, 0.14);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ink);
+}
+
+/* Field (search input well). */
+.fld {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 17px;
+  background: var(--well);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.3),
+    0 0 0 0.5px rgba(255, 255, 255, 0.12);
+}
+
+.fld:focus-within {
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.fld input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  font-size: 12px;
+}
+
+.fld input::placeholder {
+  color: var(--muted);
+}
+
+/* List row (button). */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 6px;
+  border-radius: 10px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.row:hover {
+  background: var(--hover);
+}
+
+.row.on {
+  background: var(--lit);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+
+.row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note {
+  padding: 10px 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.note.wide {
+  grid-column: 1 / -1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --spring-ms: 0ms;
+  }
+}

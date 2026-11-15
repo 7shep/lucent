@@ -1,0 +1,149 @@
+<style>
+#wall{position:relative;height:640px;border-radius:12px;overflow:hidden;background:#141826;transition:background .4s}
+.blob{position:absolute;border-radius:50%;transition:background .4s}
+.g{background:linear-gradient(180deg,rgba(255,255,255,0.12) 0%,rgba(255,255,255,0.02) 40%,rgba(255,255,255,0) 60%),rgba(24,24,32,0.34);backdrop-filter:blur(28px) saturate(1.35);-webkit-backdrop-filter:blur(28px) saturate(1.35);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),inset 0 -1px 0 rgba(255,255,255,0.06),inset 1px 0 0 rgba(255,255,255,0.08),inset -1px 0 0 rgba(255,255,255,0.08),0 0 0 0.5px rgba(255,255,255,0.1);color:#f2f2f7}
+.p{position:absolute;border-radius:24px;padding:14px 16px;overflow:hidden;transform:translateY(24px) scale(0.12);opacity:0;pointer-events:none;transition:transform .55s cubic-bezier(.34,1.45,.64,1),opacity .18s ease}
+.p.open{transform:none;opacity:1;pointer-events:auto}
+.ic{position:relative;width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:19px;cursor:pointer}
+.hit{display:flex;align-items:center;gap:10px;height:32px;padding:0 8px;border-radius:11px;cursor:pointer}
+.on{background:rgba(255,255,255,0.18);box-shadow:inset 0 1px 0 rgba(255,255,255,0.26)}
+.dot{position:absolute;bottom:-3px;left:50%;transform:translateX(-50%);width:4px;height:3px;border-radius:2px;background:rgba(255,255,255,0.55)}
+.lbl{font-size:11px;color:rgba(240,240,248,0.88);text-align:center;line-height:1.2}
+.sm{font-size:11px;color:rgba(240,240,248,0.6)}
+.hd{font-size:13px;font-weight:500}
+.app{width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,0.11);box-shadow:inset 0 1px 0 rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;font-size:19px}
+.card{border-radius:14px;background:rgba(255,255,255,0.07);box-shadow:inset 0 1px 0 rgba(255,255,255,0.14)}
+.fld{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:17px;background:rgba(0,0,0,0.22);box-shadow:inset 0 1px 2px rgba(0,0,0,0.3),0 0 0 0.5px rgba(255,255,255,0.12)}
+.hr{height:0.5px;background:rgba(255,255,255,0.14);margin:10px 0}
+.row{display:flex;gap:10px;align-items:center;padding:5px 6px;border-radius:10px}
+.tg{display:flex;flex-direction:column;gap:5px;align-items:center}
+.tgb{width:100%;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;background:rgba(255,255,255,0.09);box-shadow:inset 0 1px 0 rgba(255,255,255,0.16)}
+.tgb.act{background:rgba(255,255,255,0.82);color:#1a1a22}
+.sl{display:flex;align-items:center;gap:10px;font-size:17px;margin-top:10px}
+.tr{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,0.18);position:relative}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;font-size:11px}
+.cal span{height:24px;line-height:24px;border-radius:12px}
+</style>
+<h2 class="sr-only">Toned-down liquid glass taskbar with start, search, tray overflow, quick settings, and notification panels, each springing up from its own taskbar icon.</h2>
+<div style="background:var(--surface-1);border-radius:12px;padding:12px">
+<div id="wall">
+<div class="blob" id="b1" style="width:360px;height:360px;left:-90px;top:10px;background:#6a3fe0"></div>
+<div class="blob" id="b2" style="width:320px;height:320px;right:-80px;top:120px;background:#f07a3a"></div>
+<div class="blob" id="b3" style="width:300px;height:300px;left:120px;top:400px;background:#1fa38a"></div>
+<div class="blob" id="b4" style="width:200px;height:200px;right:60px;top:470px;background:#d63f7a"></div>
+
+<div class="g p" id="m-start" style="left:50%;bottom:66px;width:440px;margin-left:-220px;padding-bottom:0">
+<div class="fld"><i class="ti ti-search" style="font-size:15px" aria-hidden="true"></i><span class="sm" style="font-size:12px">Search apps, settings, and files</span></div>
+<div class="hd" style="margin:14px 2px 6px">Pinned</div>
+<div id="pins" style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px 2px"></div>
+<div class="hr"></div>
+<div style="display:flex;justify-content:space-between;margin:0 2px 6px"><span class="hd">Recent</span><span class="sm">Show all</span></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px">
+<div class="row"><i class="ti ti-terminal-2" style="font-size:20px" aria-hidden="true"></i><div><div style="font-size:12px">Package manager</div><div class="sm">Recently added</div></div></div>
+<div class="row"><i class="ti ti-folder" style="font-size:20px" aria-hidden="true"></i><div><div style="font-size:12px">Windows SDK</div><div class="sm">Recently added</div></div></div>
+<div class="row"><i class="ti ti-file-type-pdf" style="font-size:20px" aria-hidden="true"></i><div><div style="font-size:12px">Resume.pdf</div><div class="sm">Yesterday, 9:32 PM</div></div></div>
+<div class="row"><i class="ti ti-file-type-pdf" style="font-size:20px" aria-hidden="true"></i><div><div style="font-size:12px">Week 7.pdf</div><div class="sm">Tuesday, 12:38 PM</div></div></div>
+</div>
+<div class="hr"></div>
+<div style="display:flex;justify-content:space-between;margin:0 2px 8px"><span class="hd">All apps</span><span class="sm">Category</span></div>
+<div id="cats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px"></div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin:12px -16px 0;padding:10px 16px;background:rgba(0,0,0,0.16);box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.12)">
+<div style="display:flex;align-items:center;gap:8px"><div style="width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.18);display:flex;align-items:center;justify-content:center"><i class="ti ti-user" style="font-size:15px" aria-hidden="true"></i></div><span style="font-size:12px">First Name Last Name</span></div>
+<i class="ti ti-power" style="font-size:18px" aria-hidden="true"></i>
+</div>
+</div>
+
+<div class="g p" id="m-search" style="left:50%;bottom:66px;width:440px;margin-left:-220px">
+<div class="fld" style="box-shadow:inset 0 1px 2px rgba(0,0,0,0.3),0 0 0 1px rgba(255,255,255,0.35)"><i class="ti ti-search" style="font-size:15px" aria-hidden="true"></i><span style="font-size:12px">spoti<span style="opacity:.7">|</span></span></div>
+<div style="display:grid;grid-template-columns:150px 1fr;gap:12px;margin-top:12px">
+<div class="card" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:8px">
+<div class="app" style="width:52px;height:52px;font-size:30px;border-radius:14px"><i class="ti ti-brand-spotify" aria-hidden="true"></i></div>
+<div style="font-size:13px">Spotify</div><div class="sm">App · best match</div>
+<div style="width:100%;margin-top:4px;display:flex;flex-direction:column;gap:4px;font-size:12px">
+<div class="row" style="background:rgba(255,255,255,0.1);justify-content:center">Open</div>
+<div class="row" style="justify-content:center">Pin to taskbar</div></div>
+</div>
+<div>
+<div class="sm" style="margin:0 6px 4px">Apps</div>
+<div class="row on"><i class="ti ti-brand-spotify" style="font-size:18px" aria-hidden="true"></i><span style="font-size:12px">Spotify</span></div>
+<div class="row"><i class="ti ti-settings" style="font-size:18px" aria-hidden="true"></i><span style="font-size:12px">Sound output settings</span></div>
+<div class="sm" style="margin:8px 6px 4px">Files</div>
+<div class="row"><i class="ti ti-file-music" style="font-size:18px" aria-hidden="true"></i><span style="font-size:12px">spotify-playlist.txt</span></div>
+<div class="row"><i class="ti ti-folder" style="font-size:18px" aria-hidden="true"></i><span style="font-size:12px">Spotify cache</span></div>
+<div class="sm" style="margin:8px 6px 4px">Web</div>
+<div class="row"><i class="ti ti-world" style="font-size:18px" aria-hidden="true"></i><span style="font-size:12px">spotify — see web results</span></div>
+</div></div>
+</div>
+
+<div class="g p" id="m-tray" style="right:150px;bottom:66px;width:150px;padding:10px;border-radius:18px">
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:18px;justify-items:center">
+<div class="ic"><i class="ti ti-brand-steam" aria-hidden="true"></i></div><div class="ic"><i class="ti ti-brand-discord" aria-hidden="true"></i></div><div class="ic"><i class="ti ti-cloud" aria-hidden="true"></i></div><div class="ic"><i class="ti ti-shield-check" aria-hidden="true"></i></div>
+<div class="ic"><i class="ti ti-brand-nvidia" aria-hidden="true"></i></div><div class="ic"><i class="ti ti-bluetooth" aria-hidden="true"></i></div><div class="ic"><i class="ti ti-sparkles" aria-hidden="true"></i></div><div class="ic"><i class="ti ti-usb" aria-hidden="true"></i></div>
+</div></div>
+
+<div class="g p" id="m-qs" style="right:10px;bottom:66px;width:300px">
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+<div class="tg"><div class="tgb act"><i class="ti ti-wifi" aria-hidden="true"></i></div><div class="lbl">Home Wi-Fi</div></div>
+<div class="tg"><div class="tgb act"><i class="ti ti-bluetooth" aria-hidden="true"></i></div><div class="lbl">Bluetooth</div></div>
+<div class="tg"><div class="tgb"><i class="ti ti-moon" aria-hidden="true"></i></div><div class="lbl">Focus</div></div>
+<div class="tg"><div class="tgb"><i class="ti ti-sun-low" aria-hidden="true"></i></div><div class="lbl">Night light</div></div>
+<div class="tg"><div class="tgb"><i class="ti ti-plane" aria-hidden="true"></i></div><div class="lbl">Airplane</div></div>
+<div class="tg"><div class="tgb"><i class="ti ti-cast" aria-hidden="true"></i></div><div class="lbl">Cast</div></div>
+</div>
+<div class="sl"><i class="ti ti-sun" aria-hidden="true"></i><div class="tr"><div style="width:70%;height:100%;border-radius:2px;background:#fff"></div><div style="position:absolute;left:70%;top:-7px;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:#fff"></div></div></div>
+<div class="sl"><i class="ti ti-volume" aria-hidden="true"></i><div class="tr"><div style="width:45%;height:100%;border-radius:2px;background:#fff"></div><div style="position:absolute;left:45%;top:-7px;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:#fff"></div></div><i class="ti ti-chevron-right" style="font-size:14px" aria-hidden="true"></i></div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin:14px -16px -14px;padding:10px 16px;background:rgba(0,0,0,0.16);box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.12)">
+<span class="sm" style="font-size:12px"><i class="ti ti-plug-connected" style="font-size:14px;vertical-align:-2px" aria-hidden="true"></i> Plugged in</span><i class="ti ti-settings" style="font-size:16px" aria-hidden="true"></i></div>
+</div>
+
+<div class="p" id="m-ntf" style="right:10px;bottom:66px;width:320px;padding:0;display:flex;flex-direction:column;gap:10px;overflow:visible">
+<div class="g" style="border-radius:20px;padding:12px 14px">
+<div style="display:flex;justify-content:space-between;margin-bottom:8px"><span class="hd">Notifications</span><span class="sm">Clear all</span></div>
+<div class="card" style="padding:10px;display:flex;gap:10px;margin-bottom:8px"><div class="app" style="width:30px;height:30px;font-size:17px"><i class="ti ti-brand-discord" aria-hidden="true"></i></div><div><div style="font-size:12px">Discord · 2m</div><div class="sm">New message in #general</div></div></div>
+<div class="card" style="padding:10px;display:flex;gap:10px"><div class="app" style="width:30px;height:30px;font-size:17px"><i class="ti ti-brand-steam" aria-hidden="true"></i></div><div><div style="font-size:12px">Steam · 1h</div><div class="sm">Download finished</div></div></div>
+</div>
+<div class="g" style="border-radius:20px;padding:12px 14px">
+<div style="display:flex;justify-content:space-between;margin-bottom:8px"><span class="hd">Saturday, November 14</span><i class="ti ti-chevron-down" style="font-size:14px" aria-hidden="true"></i></div>
+<div class="cal" id="cal"></div>
+</div>
+</div>
+
+<div class="g" style="position:absolute;left:10px;right:10px;bottom:10px;height:44px;border-radius:22px;display:flex;align-items:center;padding:0 8px">
+<div style="flex:1"></div>
+<div style="display:flex;align-items:center;gap:4px">
+<div class="ic" id="t-start" onclick="show('start')" role="button" aria-label="Start"><i class="ti ti-layout-grid" aria-hidden="true"></i></div>
+<div class="ic" id="t-search" onclick="show('search')" role="button" aria-label="Search"><i class="ti ti-search" aria-hidden="true"></i></div>
+<div style="width:0.5px;height:20px;background:rgba(255,255,255,0.25);margin:0 3px"></div>
+<div class="ic"><i class="ti ti-folder" aria-hidden="true"></i><span class="dot"></span></div>
+<div class="ic"><i class="ti ti-brand-discord" aria-hidden="true"></i><span class="dot"></span><span style="position:absolute;top:2px;right:2px;width:7px;height:7px;border-radius:50%;background:#ff5a5f"></span></div>
+<div class="ic"><i class="ti ti-brand-steam" aria-hidden="true"></i><span class="dot"></span></div>
+<div class="ic"><i class="ti ti-brand-chrome" aria-hidden="true"></i><span class="dot"></span></div>
+<div class="ic"><i class="ti ti-brand-spotify" aria-hidden="true"></i><span class="dot"></span></div>
+<div class="ic"><i class="ti ti-sparkles" aria-hidden="true"></i><span class="dot"></span></div>
+<div class="ic"><i class="ti ti-photo" aria-hidden="true"></i><span class="dot"></span></div>
+</div>
+<div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:2px">
+<div class="ic" id="t-tray" onclick="show('tray')" role="button" aria-label="Hidden icons" style="font-size:15px"><i class="ti ti-chevron-up" aria-hidden="true"></i></div>
+<div class="hit" id="t-qs" onclick="show('qs')" role="button" aria-label="Quick settings"><i class="ti ti-wifi" style="font-size:16px" aria-hidden="true"></i><i class="ti ti-volume" style="font-size:16px" aria-hidden="true"></i></div>
+<div class="hit" id="t-ntf" onclick="show('ntf')" role="button" aria-label="Notifications"><div style="line-height:1.15;text-align:right"><div style="font-size:12px">10:18 PM</div><div class="sm">Nov 14</div></div><i class="ti ti-bell" style="font-size:16px" aria-hidden="true"></i></div>
+</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+<button onclick="show('start')">Start</button><button onclick="show('search')">Search</button><button onclick="show('tray')">Tray</button><button onclick="show('qs')">Quick settings</button><button onclick="show('ntf')">Notifications</button>
+<span style="font-size:13px;color:var(--text-secondary);margin-left:6px">Wallpaper:</span>
+<button onclick="wp(0)">Aurora</button><button onclick="wp(1)">Ocean</button>
+</div>
+</div>
+<script>
+const pins=[["brand-minecraft","Minecraft"],["building-store","Store"],["photo","Photos"],["settings","Settings"],["brand-spotify","Spotify"],["brand-whatsapp","WhatsApp"],["brand-tiktok","TikTok"],["movie","Prime Video"],["notes","Notepad"],["palette","Paint"],["folder","Files"]];
+document.getElementById('pins').innerHTML=pins.map(p=>`<div style="display:flex;flex-direction:column;align-items:center;gap:5px"><div class="app"><i class="ti ti-${p[0]}"></i></div><div class="lbl">${p[1]}</div></div>`).join('');
+const cats=[["Productivity","brand-chrome brand-opera folder file-type-pdf"],["Other","brand-discord device-gamepad-2 brand-valorant apps"],["Developer tools","terminal-2 brand-vscode brand-openai apps"],["Utilities","scissors photo-edit settings apps"]];
+document.getElementById('cats').innerHTML=cats.map(c=>`<div><div class="card" style="padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;justify-items:center;font-size:18px">${c[1].split(' ').map(i=>`<i class="ti ti-${i}"></i>`).join('')}</div><div class="lbl" style="margin-top:5px">${c[0]}</div></div>`).join('');
+let h='';'SMTWTFS'.split('').forEach(d=>h+=`<span class="sm">${d}</span>`);for(let d=1;d<=30;d++)h+=`<span style="${d===14?'background:#fff;color:#1a1a22;font-weight:500':''}">${d}</span>`;document.getElementById('cal').innerHTML=h;
+const keys=['start','search','tray','qs','ntf'],wall=document.getElementById('wall');
+function show(k){keys.forEach(x=>{const p=document.getElementById('m-'+x),t=document.getElementById('t-'+x);const open=x===k&&!p.classList.contains('open');if(open){const w=wall.getBoundingClientRect(),b=t.getBoundingClientRect();p.style.transformOrigin=(b.left+b.width/2-w.left-p.offsetLeft)+'px '+(b.top+b.height/2-w.top-p.offsetTop)+'px';}p.classList.toggle('open',open);t.classList.toggle('on',open);});}
+const W=[["#141826","#6a3fe0","#f07a3a","#1fa38a","#d63f7a"],["#0a1626","#1d6fd6","#25b5c9","#3b3fb8","#7ad0e8"]];
+function wp(i){const w=W[i];wall.style.background=w[0];['b1','b2','b3','b4'].forEach((b,k)=>document.getElementById(b).style.background=w[k+1]);}
+setTimeout(()=>show('start'),350);
+</script>

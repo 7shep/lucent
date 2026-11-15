@@ -1,0 +1,213 @@
+/* Lucent dock: the full-width glass bar and the hover label. The window is the
+   monitor width by 104 px. The bar is 44 px tall, 10 px from the left, right and
+   bottom edges. The label floats above the bar, over the top 60 px. */
+
+.dock {
+  position: fixed;
+  inset: 0;
+}
+
+.bar {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  height: 44px;
+  border-radius: 22px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+
+.spacer {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sep {
+  width: 0.5px;
+  height: 20px;
+  margin: 0 3px;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Square buttons: start, search, tray, and the dock items. */
+.ic {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  transition:
+    transform var(--spring-ms) var(--spring),
+    background var(--fade-ms) var(--ease);
+}
+
+.ic:hover {
+  background: var(--hover);
+}
+
+.ic.on {
+  background: var(--lit);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+
+.ic .g {
+  width: 19px;
+  height: 19px;
+}
+
+/* Dock items lift and grow on hover. */
+.item:hover {
+  background: transparent;
+  transform: translateY(-5px) scale(1.12);
+}
+
+.item.on:hover {
+  background: var(--lit);
+}
+
+.item .ico-wrap {
+  width: 24px;
+  height: 24px;
+}
+
+.item .dot {
+  position: absolute;
+  bottom: -3px;
+  left: 50%;
+  width: 4px;
+  height: 3px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.55);
+  opacity: 0;
+  transition:
+    width 0.2s var(--ease),
+    opacity var(--fade-ms) var(--ease);
+  pointer-events: none;
+}
+
+.item.running .dot {
+  opacity: 1;
+}
+
+/* Active: a 14 px white bar under the lit tile (the running dot is 4 px and dim). */
+.item.active .dot {
+  width: 14px;
+  margin-left: -7px;
+  background: #fff;
+}
+
+/* Flashing for attention: a red dot in the top-right corner, pulsing. */
+.item .flash {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red);
+  display: none;
+  pointer-events: none;
+}
+
+.item.flashing .flash {
+  display: block;
+  animation: flash 1s ease-in-out infinite alternate;
+}
+
+@keyframes flash {
+  from { opacity: 1; }
+  to { opacity: 0.25; }
+}
+
+/* Wide buttons: quick settings and the clock. */
+.hit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 11px;
+  transition: background var(--fade-ms) var(--ease);
+}
+
+.hit:hover {
+  background: var(--hover);
+}
+
+.hit.on {
+  background: var(--lit);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+
+.hit .g {
+  width: 16px;
+  height: 16px;
+}
+
+.clock {
+  display: block;
+  line-height: 1.15;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.clock-time {
+  display: block;
+  font-size: 12px;
+}
+
+/* Hover label above a dock item. Left is set from JS (the item's centre). */
+.label {
+  position: absolute;
+  bottom: 60px;
+  left: 0;
+  max-width: 320px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translate(-50%, 4px);
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--fade-ms) var(--ease),
+    transform var(--spring-ms) var(--spring),
+    visibility var(--fade-ms);
+}
+
+.label.show {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  visibility: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .item:hover {
+    transform: none;
+  }
+
+  .item.flashing .flash {
+    animation: none;
+  }
+
+  .label,
+  .label.show {
+    transform: translate(-50%, 0);
+  }
+}
