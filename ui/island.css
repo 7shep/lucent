@@ -79,7 +79,8 @@ body {
   opacity: 1;
 }
 
-/* Collapsed content: artwork thumbnail left, equaliser right. */
+/* Collapsed content: artwork thumbnail left, a small timeline with the total
+   length, then the equaliser right. */
 
 .collapsed {
   position: absolute;
@@ -87,6 +88,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 0 8px;
   transition: opacity 0.2s var(--ease);
 }
@@ -165,6 +167,42 @@ body {
   animation-delay: -0.6s;
 }
 
+.mini-timeline {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mini-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--hover);
+  overflow: hidden;
+}
+
+.mini-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--ink);
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform 0.25s linear;
+}
+
+.mini-total {
+  flex: none;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Paused: the bars freeze in place. */
 .island:not(.is-playing) .eq span {
   animation-play-state: paused;
@@ -223,20 +261,17 @@ body {
   color: var(--muted);
 }
 
-/* Timeline: hidden unless the island knows the track length (has-timeline). */
+/* Timeline: always shown in the card. Without a known track length it shows
+   an empty track and placeholder times. */
 
 .timeline {
-  display: none;
+  display: flex;
   align-items: center;
   gap: 8px;
   font-size: 11px;
   line-height: 16px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-
-.island.has-timeline .timeline {
-  display: flex;
 }
 
 .timeline-time {
@@ -322,7 +357,8 @@ body {
   background: #ffffff;
 }
 
-.icon-pause {
+/* `.btn` in the selector so it outranks `.btn svg { display: block }`. */
+.btn .icon-pause {
   display: none;
 }
 
@@ -341,7 +377,8 @@ body {
   .collapsed,
   .card,
   .btn,
-  .timeline-fill {
+  .timeline-fill,
+  .mini-fill {
     transition: none !important;
   }
 
