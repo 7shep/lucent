@@ -63,6 +63,13 @@ fn main() {
             build_tray(app)?;
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                if window.label() == island::LABEL {
+                    island::on_scale_changed(window.app_handle(), *scale_factor);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             island::set_expanded,
             island::set_hit_region,
