@@ -178,6 +178,18 @@ enum Msg {
     Command(Command),
     SessionChanged,
     StateChanged,
+    /// Sent once by a one-shot delay thread when a manager request should be retried.
+    RetryManager,
+}
+
+/// Delay before the next session manager retry: 2s, 4s, 8s, ... capped at 60s.
+fn retry_delay(attempt: u32) -> Duration {
+    const BASE_SECS: u64 = 2;
+    const CAP_SECS: u64 = 60;
+    let secs = BASE_SECS
+        .saturating_mul(1u64 << attempt.min(16))
+        .min(CAP_SECS);
+    Duration::from_secs(secs)
 }
 
 /// Managed by Tauri: a channel into the monitor thread plus the last state.
@@ -261,6 +273,10 @@ struct Monitor {
     manager: Option<SessionManager>,
     sub: Option<Subscription>,
     emitted: Option<MediaState>,
+    /// Failed manager requests in a row. Reset when the manager is acquired.
+    retry_attempt: u32,
+    /// True while a one-shot RetryManager delay thread is outstanding.
+    retry_pending: bool,
 }
 
 fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>, rx: Receiver<Msg>) {
@@ -273,17 +289,17 @@ fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>,
         manager,
         sub: None,
         emitted: None,
+        retry_attempt: 0,
+        retry_pending: false,
     };
+    if monitor.manager.is_none() {
+        monitor.schedule_retry();
+    }
     monitor.attach_session();
     monitor.publish();
 
-    // Blocks until a handler or a command sends something.
+    // Blocks until a handler, a command, or the retry timer sends something.
     for msg in rx {
-        // A failed startup request is retried lazily, on the next message.
-        if monitor.ensure_manager() {
-            monitor.attach_session();
-            monitor.publish();
-        }
         match msg {
             Msg::Command(command) => monitor.command(command),
             Msg::SessionChanged => {
@@ -291,20 +307,52 @@ fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>,
                 monitor.publish();
             }
             Msg::StateChanged => monitor.publish(),
+            Msg::RetryManager => {
+                monitor.retry_pending = false;
+                if monitor.ensure_manager() {
+                    monitor.attach_session();
+                    monitor.publish();
+                }
+            }
         }
     }
 }
 
 impl Monitor {
-    /// Retries the session manager request when it is missing.
-    /// Returns true when the manager was newly acquired. The manager is only
-    /// ever set from None, so no event token needs removing.
+    /// Retries the session manager request when it is missing. Returns true
+    /// when the manager was newly acquired. On failure, schedules the next
+    /// retry with backoff. The manager is only ever set from None, so no
+    /// event token needs removing.
     fn ensure_manager(&mut self) -> bool {
         if self.manager.is_some() {
             return false;
         }
         self.manager = request_manager_subscribed(&self.tx);
-        self.manager.is_some()
+        if self.manager.is_some() {
+            self.retry_attempt = 0;
+            return true;
+        }
+        self.retry_attempt = self.retry_attempt.saturating_add(1);
+        self.schedule_retry();
+        false
+    }
+
+    /// Schedules one RetryManager message after `retry_delay(retry_attempt)`.
+    /// A no-op while a retry is already pending, so at most one delay thread
+    /// exists at a time. The thread exits after sending its message.
+    fn schedule_retry(&mut self) {
+        if self.retry_pending {
+            return;
+        }
+        let delay = retry_delay(self.retry_attempt);
+        let tx = self.tx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("lucent-media-retry".into())
+            .spawn(move || {
+                std::thread::sleep(delay);
+                let _ = tx.send(Msg::RetryManager);
+            });
+        self.retry_pending = spawned.is_ok();
     }
 
     fn attach_session(&mut self) {
@@ -632,6 +680,27 @@ mod tests {
     fn wait_returns_ready_value() {
         let op = IAsyncOperation::<bool>::ready(Ok(true));
         assert_eq!(wait(&op, Duration::from_millis(200)), Some(true));
+    }
+
+    #[test]
+    fn retry_delay_first_is_two_seconds() {
+        assert_eq!(retry_delay(0), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn retry_delay_doubles() {
+        assert_eq!(retry_delay(1), Duration::from_secs(4));
+        assert_eq!(retry_delay(2), Duration::from_secs(8));
+        assert_eq!(retry_delay(3), Duration::from_secs(16));
+        assert_eq!(retry_delay(4), Duration::from_secs(32));
+    }
+
+    #[test]
+    fn retry_delay_caps_at_sixty_seconds() {
+        assert_eq!(retry_delay(5), Duration::from_secs(60));
+        assert_eq!(retry_delay(6), Duration::from_secs(60));
+        assert_eq!(retry_delay(1000), Duration::from_secs(60));
+        assert_eq!(retry_delay(u32::MAX), Duration::from_secs(60));
     }
 
     #[test]
