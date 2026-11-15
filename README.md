@@ -9,6 +9,7 @@ Liquid-glass shell customizations for Windows 11 — starting with a Dynamic-Isl
 - Briefly expands when the track changes.
 - Event-driven and light on resources: the media monitor blocks until Windows reports a change, so there is no polling and idle CPU stays near zero.
 - `lucent.exe --print-media` prints the current media state as one line of JSON and exits.
+- Steps aside for fullscreen apps (games, video players): when the app is fullscreen on the primary monitor, the pill moves to the first other monitor without one, and hides when no monitor is free. It returns to the primary monitor when the app leaves fullscreen. Event-driven (Windows event hooks), no polling.
 - System tray icon with "Quit Lucent" (there is no taskbar entry).
 
 ## Build
@@ -40,7 +41,6 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - Desktop widgets
 - File sharing based on LocalSend
 - AirDrop / AWDL research
-- Pause while fullscreen games are running
 
 ## License
 
