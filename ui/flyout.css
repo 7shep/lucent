@@ -64,6 +64,52 @@
   border-radius: 0;
 }
 
+/* Width and height come from the dock (flyout-show), from the icon count:
+   10 px padding, 36 px cells, 4 px gaps, at most 4 columns. */
+#p-tray {
+  width: 176px;
+  height: 56px;
+  padding: 10px;
+  border-radius: 18px;
+}
+
+.tray-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 36px);
+  grid-auto-rows: 36px;
+  gap: 4px;
+}
+
+.tray-ic {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  transition: background var(--fade-ms) var(--ease);
+}
+
+.tray-ic:hover,
+.tray-ic:focus-visible {
+  background: var(--hover);
+}
+
+.tray-ic img {
+  width: 20px;
+  height: 20px;
+}
+
+.tray-ic .ico-fb {
+  font-size: 12px;
+}
+
+.tray-empty {
+  margin: 0;
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .panel,
   .panel.open {

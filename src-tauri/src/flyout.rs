@@ -19,7 +19,7 @@ const PANEL_BOTTOM_GAP: f64 = 66.0;
 const BAR_CENTRE_BELOW_PANEL: f64 = 12.0 + 22.0;
 
 /// The panels the flyout can host. Anything else is rejected.
-pub const PANELS: [&str; 4] = ["start", "search", "quick_settings", "notifications"];
+pub const PANELS: [&str; 5] = ["start", "search", "quick_settings", "notifications", "tray"];
 
 /// The panel currently open, if any. A static so main.rs needs no change.
 static OPEN_PANEL: Mutex<Option<String>> = Mutex::new(None);
@@ -33,6 +33,9 @@ struct ShowPayload {
     /// Flyout window's top-left, logical px relative to the primary monitor's top-left.
     window_x: f64,
     window_y: f64,
+    /// Panel size in logical px, for panels sized by their content (tray).
+    width: f64,
+    height: f64,
 }
 
 #[derive(Serialize, Clone)]
@@ -213,6 +216,8 @@ pub fn flyout_open(app: AppHandle, panel: String, x: f64, width: f64, height: f6
             origin_y: placement.origin_y,
             window_x: placement.window_x,
             window_y: placement.window_y,
+            width,
+            height,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -303,6 +308,7 @@ mod tests {
         assert_eq!(parse_panel("search"), Ok("search"));
         assert_eq!(parse_panel("quick_settings"), Ok("quick_settings"));
         assert_eq!(parse_panel("notifications"), Ok("notifications"));
+        assert_eq!(parse_panel("tray"), Ok("tray"));
         assert!(parse_panel("Start").is_err());
         assert!(parse_panel("quick-settings").is_err());
         assert!(parse_panel("").is_err());

@@ -18,7 +18,8 @@
     start: 'p-start',
     search: 'p-search',
     quick_settings: 'p-quick_settings',
-    notifications: 'p-notifications'
+    notifications: 'p-notifications',
+    tray: 'p-tray'
   };
   // ask: the confirm question. Those items need a second click; the rest act at once.
   const POWER_ITEMS = [
@@ -80,6 +81,8 @@
     calPrev: $('cal-prev'),
     calNext: $('cal-next'),
     cal: $('cal'),
+    trayGrid: $('tray-grid'),
+    trayEmpty: $('tray-empty'),
     menu: $('menu'),
     menuItems: $('menu-items')
   };
@@ -978,8 +981,78 @@
     resetPanel(name);
   }
 
+  // ---- Tray ------------------------------------------------------------------
+  // One button per hosted icon, keyed by id so live updates swap only images.
+  // Clicks go to the owning app through tray_click.
+
+  const trayButtons = new Map(); // id -> button
+
+  function trayButton(id) {
+    const button = h('button', { class: 'tray-ic', type: 'button' });
+    const img = h('img', { alt: '', draggable: 'false', hidden: '' });
+    const fallback = h('span', { class: 'ico-fb', 'aria-hidden': 'true' });
+    button.append(img, fallback);
+    button._img = img;
+    button._fb = fallback;
+    // A double click also fires two clicks; only the first one is sent.
+    button.addEventListener('click', (e) => {
+      if (e.detail <= 1) call('tray_click', { id: id, button: 'left' });
+    });
+    button.addEventListener('dblclick', () => call('tray_click', { id: id, button: 'double' }));
+    button.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      call('tray_click', { id: id, button: 'right' });
+    });
+    return button;
+  }
+
+  function renderTray(icons) {
+    const list = Array.isArray(icons) ? icons : [];
+    const seen = new Set();
+    let index = 0;
+    for (const icon of list) {
+      if (!icon || typeof icon.id !== 'string' || seen.has(icon.id)) continue;
+      seen.add(icon.id);
+      let button = trayButtons.get(icon.id);
+      if (!button) {
+        button = trayButton(icon.id);
+        trayButtons.set(icon.id, button);
+      }
+      const tip = typeof icon.tip === 'string' ? icon.tip : '';
+      button.title = tip;
+      button.setAttribute('aria-label', tip || 'Notification icon');
+      const url = typeof icon.image === 'string' && icon.image.startsWith('data:image/png;base64,') ? icon.image : '';
+      if (url) {
+        if (button._img.getAttribute('src') !== url) button._img.src = url;
+        button._img.hidden = false;
+        button._fb.hidden = true;
+      } else {
+        button._img.hidden = true;
+        button._fb.hidden = false;
+        button._fb.textContent = initialOf(tip);
+      }
+      const at = el.trayGrid.children[index] || null;
+      if (at !== button) el.trayGrid.insertBefore(button, at);
+      index += 1;
+    }
+    for (const [id, button] of trayButtons) {
+      if (!seen.has(id)) {
+        button.remove();
+        trayButtons.delete(id);
+      }
+    }
+    el.trayEmpty.hidden = trayButtons.size > 0;
+  }
+
+  function refreshTray() {
+    call('get_tray_icons').then((icons) => {
+      if (icons) renderTray(icons);
+    });
+  }
+
   function prepare(name) {
-    if (name === 'start') refreshStart();
+    if (name === 'tray') refreshTray();
+    else if (name === 'start') refreshStart();
     else if (name === 'quick_settings') refreshSystem();
     else if (name === 'notifications') {
       resetCalendar();
@@ -1013,6 +1086,13 @@
 
     state.windowX = Number(payload.windowX) || 0;
     state.windowY = Number(payload.windowY) || 0;
+    if (name === 'tray') {
+      // Sized by the dock from the icon count; resizes arrive as another flyout-show.
+      const width = Number(payload.width);
+      const height = Number(payload.height);
+      if (isFinite(width) && width > 0) node.style.width = width + 'px';
+      if (isFinite(height) && height > 0) node.style.height = height + 'px';
+    }
     prepare(name);
     void node.offsetWidth; // start the spring from the closed state
     node.classList.add('open');
@@ -1098,6 +1178,7 @@
   listen('backdrop-changed', () => loadBackdrop());
   listen('flyout-show', (event) => onShow(event ? event.payload : null));
   listen('flyout-close', () => onClose());
+  listen('tray-changed', (event) => renderTray(event ? event.payload : null));
 
   renderPins(state.pins);
   refreshStart();

@@ -507,7 +507,7 @@ fn bgra_premul_to_rgba(bgra: &[u8]) -> Vec<u8> {
 }
 
 /// Encodes straight RGBA8 pixels as a PNG. None when the sizes do not match or the encoder fails.
-fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let expected = usize::try_from(width)
         .ok()?
         .checked_mul(usize::try_from(height).ok()?)?
@@ -989,7 +989,7 @@ fn all_apps() -> Vec<CatalogApp> {
 
 /// Copies the pixels of `hbmp` as top-down BGRA. Returns (width, height, bytes).
 /// The caller still owns `hbmp`.
-fn read_bitmap_bgra(hbmp: HBITMAP, fallback: u32) -> Option<(u32, u32, Vec<u8>)> {
+pub(crate) fn read_bitmap_bgra(hbmp: HBITMAP, fallback: u32) -> Option<(u32, u32, Vec<u8>)> {
     let mut info = BITMAP::default();
     // SAFETY: `info` is a BITMAP-sized writable struct, and `hbmp` is a valid
     // bitmap handle for the duration of the call.

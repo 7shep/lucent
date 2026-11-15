@@ -11,8 +11,11 @@
     start: { w: 440, h: 600, x: (vw) => (vw - 440) / 2 },
     search: { w: 440, h: 420, x: (vw) => (vw - 440) / 2 },
     quick_settings: { w: 300, h: 300, x: (vw) => vw - 10 - 300 },
-    notifications: { w: 320, h: 480, x: (vw) => vw - 10 - 320 }
+    notifications: { w: 320, h: 480, x: (vw) => vw - 10 - 320 },
+    tray: { w: 0, h: 0, x: () => 0 } // sized from the icon count in sizeTray
   };
+  // Tray grid, in step with #p-tray in flyout.css.
+  const TRAY = { cols: 4, cell: 36, gap: 4, pad: 10, emptyW: 176, emptyH: 56, edge: 10 };
 
   const el = {
     bar: document.getElementById('bar'),
@@ -35,7 +38,8 @@
     start: el.start,
     search: el.search,
     quick_settings: el.qs,
-    notifications: el.clock
+    notifications: el.clock,
+    tray: el.tray
   };
 
   const state = {
@@ -44,7 +48,8 @@
     hideTimer: 0,
     clockTimer: 0,
     records: new Map(), // item id -> { id, el, icon, item, cycle, iconLaunch }
-    regionKey: ''
+    regionKey: '',
+    trayCount: -1 // icons in the open tray panel's layout
   };
 
   // ---- Tauri access -------------------------------------------------------
@@ -365,11 +370,67 @@
 
   // ---- Panels -------------------------------------------------------------
 
+  // Tray panel size for `count` icons: up to TRAY.cols per row.
+  function traySize(count) {
+    if (count <= 0) return { w: TRAY.emptyW, h: TRAY.emptyH };
+    const cols = Math.min(TRAY.cols, count);
+    const rows = Math.ceil(count / TRAY.cols);
+    return {
+      w: TRAY.pad * 2 + cols * TRAY.cell + (cols - 1) * TRAY.gap,
+      h: TRAY.pad * 2 + rows * TRAY.cell + (rows - 1) * TRAY.gap
+    };
+  }
+
+  // Sizes the tray panel for `count` icons, centred on the chevron and kept on screen.
+  function sizeTray(count) {
+    const size = traySize(count);
+    const r = el.tray.getBoundingClientRect();
+    const centre = r.left + r.width / 2;
+    PANELS.tray.w = size.w;
+    PANELS.tray.h = size.h;
+    PANELS.tray.x = (vw) => Math.max(TRAY.edge, Math.min(vw - TRAY.edge - size.w, centre - size.w / 2));
+    state.trayCount = count;
+  }
+
+  // The chevron. Without the tray host (it failed to start), the native
+  // Windows tray is shown instead.
+  function openTray() {
+    if (state.openPanel === 'tray') {
+      call('flyout_request_close');
+      return;
+    }
+    invoke('get_tray_icons').then(
+      (icons) => {
+        sizeTray(Array.isArray(icons) ? icons.length : 0);
+        togglePanel('tray');
+      },
+      (err) => {
+        console.warn('tray host unavailable', err);
+        call('show_native_tray');
+      }
+    );
+  }
+
+  // Icons came or went while the tray panel is open: resize it in place.
+  function onTrayChanged(icons) {
+    if (state.openPanel !== 'tray') return;
+    const count = Array.isArray(icons) ? icons.length : 0;
+    const before = traySize(state.trayCount);
+    const after = traySize(count);
+    if (before.w === after.w && before.h === after.h) return;
+    sizeTray(count);
+    openPanel('tray');
+  }
+
   function togglePanel(name) {
     if (state.openPanel === name) {
       call('flyout_request_close');
       return;
     }
+    openPanel(name);
+  }
+
+  function openPanel(name) {
     const spec = Object.prototype.hasOwnProperty.call(PANELS, name) ? PANELS[name] : null;
     const button = panelButtons[name];
     if (!spec || !button) return;
@@ -441,7 +502,7 @@
   el.search.addEventListener('click', () => togglePanel('search'));
   el.qs.addEventListener('click', () => togglePanel('quick_settings'));
   el.clock.addEventListener('click', () => togglePanel('notifications'));
-  el.tray.addEventListener('click', () => call('show_native_tray'));
+  el.tray.addEventListener('click', openTray);
 
   el.label.addEventListener('pointerenter', cancelHide);
   el.label.addEventListener('pointerleave', scheduleHide);
@@ -469,6 +530,7 @@
     if (!state.openPanel) refreshSystem();
   });
   listen('start-key', () => togglePanel('start'));
+  listen('tray-changed', (event) => onTrayChanged(event ? event.payload : null));
 
   renderClock();
   scheduleClock();

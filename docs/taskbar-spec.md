@@ -241,6 +241,41 @@ Variable. Spring: `cubic-bezier(.34,1.45,.64,1)` 550 ms; opacity 180 ms.
   as soon as the foreground moves to something that is not a shell tray window
   (classes `Shell_TrayWnd`, `NotifyIconOverflowWindow`,
   `TopLevelWindowForOverflowXamlIsland`, `Xaml_WindowedPopupClass`) and not Lucent.
+- Lucent's own tray host window (module `tray`) also has class `Shell_TrayWnd`;
+  `tray_windows` skips windows owned by Lucent so it is never shown or hidden.
+- `show_native_tray` is now only the fallback when the tray host failed to start.
+
+## Module `tray` (src-tauri/src/tray.rs)
+
+Notification-area host on its own thread and message loop:
+
+- Creates a hidden `WS_EX_TOPMOST | WS_EX_TOOLWINDOW` popup of class
+  `Shell_TrayWnd`, raised above Explorer's, so `Shell_NotifyIcon` (which sends
+  `WM_COPYDATA` to the first `Shell_TrayWnd` in z-order) reaches Lucent. Allows
+  `WM_COPYDATA` and `TaskbarCreated` from lower integrity.
+- `WM_COPYDATA` with `dwData == 1`: parse the signed payload (signature
+  `0x34753423`, NIM_* command, NOTIFYICONDATAW with 32-bit handles), apply
+  add/modify/delete/setversion to the icon store (identity: GUID with
+  `NIF_GUID`, else hWnd + uID), render the HICON to a PNG data URL while the
+  caller still waits, emit `tray-changed`. Every `WM_COPYDATA` (also appbar
+  `dwData 0` and icon-rect `dwData 3`), `WM_COMMAND` and `WM_USER..0x7FFF`
+  message is forwarded to Explorer's tray, so Explorer keeps a full copy.
+- At start, posts `TaskbarCreated` so running apps re-register. On a
+  `TaskbarCreated` from a restarted Explorer, re-raises and re-broadcasts (our
+  own broadcast arrives while we are first, so it does not loop). WinEvents
+  (show, foreground of a `Shell_TrayWnd`) re-raise the host; no polling.
+- Commands: `get_tray_icons` (visible icons, dead owners dropped; errors when
+  the host is not running) and `tray_click(id, button)` with `left`, `right`,
+  `double`: `AllowSetForegroundWindow(owner pid)`, then the Explorer sequence
+  (down, up, plus `NIN_SELECT` / `WM_CONTEXTMENU` for version 3+). Version 4:
+  `wParam` = cursor x/y, `lParam` = event | uID << 16; older: `wParam` = uID,
+  `lParam` = event.
+- On exit, `tray::stop` closes the host before the taskbar is restored.
+
+Tray panel: the chevron opens the `tray` flyout panel, a glass grid of 36 px
+cells (4 columns, 10 px padding) sized by the dock from the icon count and
+resized live on `tray-changed`.
+
 - Autostart: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value
   `Lucent` = `"<current exe path>"`. `autostart_enabled()` = the value exists
   and points at the current exe.
@@ -253,7 +288,7 @@ Plain HTML/CSS/JS, no build step, `window.__TAURI__` global, CSP `script-src
 inline SVG.
 
 Dock: full-width bar. Centre group: start, search, separator, then `DockItem`s.
-Right group: chevron (`show_native_tray`), quick-settings button (wifi or
+Right group: chevron (tray panel), quick-settings button (wifi or
 ethernet glyph + volume glyph), clock button (time + short date, refreshed at
 each minute boundary) with bell. Running dot under icons with windows; wider
 white bar + lit tile for `active`; red dot for `flashing`. Hover: icon lifts

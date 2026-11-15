@@ -698,7 +698,8 @@ unsafe extern "system" fn collect_trays(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: lparam is the &mut Vec<HWND> that tray_windows passed in, and it is
     // alive for the whole enumeration.
     let found = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
-    if class_name(hwnd).is_some_and(|name| is_shell_tray_class(&name)) {
+    // Lucent's own Shell_TrayWnd (the tray host in tray.rs) is not a taskbar.
+    if class_name(hwnd).is_some_and(|name| is_shell_tray_class(&name)) && !is_ours(hwnd) {
         found.push(hwnd);
     }
     BOOL(1)

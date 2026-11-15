@@ -10,6 +10,7 @@ mod model;
 mod shell;
 mod system;
 mod tasks;
+mod tray;
 
 use base64::Engine as _;
 use serde_json::json;
@@ -151,6 +152,7 @@ fn main() {
             island::show_initial(app.handle())?;
             tasks::start(app.handle().clone());
             shell::takeover(app.handle())?;
+            tray::start(app.handle().clone());
             fullscreen::start(app.handle().clone());
             build_tray(app)?;
             Ok(())
@@ -211,6 +213,8 @@ fn main() {
             flyout::flyout_request_close,
             flyout::flyout_hidden,
             shell::show_native_tray,
+            tray::get_tray_icons,
+            tray::tray_click,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Lucent");
@@ -218,6 +222,8 @@ fn main() {
     app.run(|_app, event| {
         // Every way out of the event loop puts the Windows taskbar back.
         if let tauri::RunEvent::Exit = event {
+            // Explorer's tray receives Shell_NotifyIcon again before the taskbar returns.
+            tray::stop();
             shell::restore_quiet();
         }
     });
