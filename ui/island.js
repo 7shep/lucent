@@ -1,6 +1,6 @@
 // Lucent island: shows the Windows media session and drives the island window size.
 // Event-driven. Timers: a one-shot timeout for the auto-peek, and a progress
-// tick for the timeline that runs only while the card is expanded and playing.
+// tick for the timelines (pill and card) that runs only while a track is playing.
 (function () {
   'use strict';
 
@@ -20,6 +20,8 @@
     remaining: document.getElementById('remaining'),
     track: document.getElementById('track'),
     fill: document.getElementById('fill'),
+    miniFill: document.getElementById('mini-fill'),
+    miniTotal: document.getElementById('mini-total'),
     prev: document.getElementById('prev'),
     toggle: document.getElementById('toggle'),
     next: document.getElementById('next')
@@ -125,15 +127,28 @@
     return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + s : m + ':' + s;
   }
 
-  // Draws the timeline from the last sample. Hidden when the length is unknown.
+  // Draws the timeline from the last sample. With no known length it shows an
+  // empty track and placeholder times, so the row never disappears.
   function renderTimeline() {
     const tl = state.timeline;
     const total = tl.duration;
-    island.classList.toggle('has-timeline', total !== null);
-    if (total === null) return;
+    if (total === null) {
+      el.fill.style.transform = 'scaleX(0)';
+      el.miniFill.style.transform = 'scaleX(0)';
+      el.miniTotal.textContent = '-:--';
+      el.elapsed.textContent = '0:00';
+      el.remaining.textContent = '-:--';
+      el.track.setAttribute('aria-valuemax', '0');
+      el.track.setAttribute('aria-valuenow', '0');
+      el.track.setAttribute('aria-valuetext', 'Unknown length');
+      return;
+    }
     const pos = timelinePositionMs(tl, Date.now());
     const elapsed = formatTime(pos);
-    el.fill.style.transform = 'scaleX(' + pos / total + ')';
+    const progress = 'scaleX(' + pos / total + ')';
+    el.fill.style.transform = progress;
+    el.miniFill.style.transform = progress;
+    el.miniTotal.textContent = formatTime(total);
     el.elapsed.textContent = elapsed;
     el.remaining.textContent = '-' + formatTime(total - pos);
     el.track.setAttribute('aria-valuemax', String(total));
@@ -141,10 +156,10 @@
     el.track.setAttribute('aria-valuetext', elapsed + ' of ' + formatTime(total));
   }
 
-  // The only timeline timer. Runs while the card is open and a track is playing.
-  // Started and stopped from expand, collapse and render.
+  // The only timeline timer. Runs while a track of known length is playing, since
+  // the pill shows progress too. Started and stopped from expand, collapse and render.
   function syncTimeline() {
-    const active = state.expanded && state.timeline.playing && state.timeline.duration !== null;
+    const active = state.timeline.playing && state.timeline.duration !== null;
     if (active && !timelineTimer) {
       timelineTimer = setInterval(renderTimeline, TIMELINE_TICK_MS);
     } else if (!active && timelineTimer) {
