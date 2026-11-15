@@ -217,6 +217,18 @@ enum Msg {
     Command(Command),
     SessionChanged,
     StateChanged,
+    /// Sent once by a one-shot delay thread when a manager request should be retried.
+    RetryManager,
+}
+
+/// Delay before the next session manager retry: 2s, 4s, 8s, ... capped at 60s.
+fn retry_delay(attempt: u32) -> Duration {
+    const BASE_SECS: u64 = 2;
+    const CAP_SECS: u64 = 60;
+    let secs = BASE_SECS
+        .saturating_mul(1u64 << attempt.min(16))
+        .min(CAP_SECS);
+    Duration::from_secs(secs)
 }
 
 /// What the monitor does for one drained batch of queued messages.
@@ -246,6 +258,8 @@ fn coalesce(batch: Vec<Msg>) -> Plan {
             Msg::Command(command) => plan.commands.push(command),
             Msg::SessionChanged => plan.reattach = true,
             Msg::StateChanged => plan.publish = true,
+            // Handled by the monitor loop before coalescing.
+            Msg::RetryManager => {}
         }
     }
     if plan.reattach {
@@ -336,6 +350,10 @@ struct Monitor {
     sub: Option<Subscription>,
     emitted: Option<MediaState>,
     artwork: ArtworkCache,
+    /// Failed manager requests in a row. Reset when the manager is acquired.
+    retry_attempt: u32,
+    /// True while a one-shot RetryManager delay thread is outstanding.
+    retry_pending: bool,
 }
 
 fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>, rx: Receiver<Msg>) {
@@ -349,27 +367,33 @@ fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>,
         sub: None,
         emitted: None,
         artwork: ArtworkCache::default(),
+        retry_attempt: 0,
+        retry_pending: false,
     };
+    if monitor.manager.is_none() {
+        monitor.schedule_retry();
+    }
     monitor.attach_session();
     monitor.publish();
 
-    // Blocks until a handler or a command sends something. Then drains
-    // everything else already queued, so a burst costs one re-read.
+    // Blocks until a handler, a command, or the retry timer sends something.
+    // Then drains everything else already queued, so a burst costs one re-read.
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
         while let Ok(msg) = rx.try_recv() {
             batch.push(msg);
         }
-        // A failed startup request is retried lazily, on the next batch.
-        let acquired = monitor.ensure_manager();
-        if acquired {
-            monitor.attach_session();
+        // A failed manager request is retried only when its backoff timer fires.
+        let mut acquired = false;
+        if batch.iter().any(|msg| matches!(msg, Msg::RetryManager)) {
+            monitor.retry_pending = false;
+            acquired = monitor.ensure_manager();
         }
         let plan = coalesce(batch);
         for command in plan.commands {
             monitor.command(command);
         }
-        if plan.reattach {
+        if plan.reattach || acquired {
             monitor.attach_session();
         }
         if plan.publish || acquired {
@@ -379,15 +403,40 @@ fn monitor_thread(app: AppHandle, last: Arc<Mutex<MediaState>>, tx: Sender<Msg>,
 }
 
 impl Monitor {
-    /// Retries the session manager request when it is missing.
-    /// Returns true when the manager was newly acquired. The manager is only
-    /// ever set from None, so no event token needs removing.
+    /// Retries the session manager request when it is missing. Returns true
+    /// when the manager was newly acquired. On failure, schedules the next
+    /// retry with backoff. The manager is only ever set from None, so no
+    /// event token needs removing.
     fn ensure_manager(&mut self) -> bool {
         if self.manager.is_some() {
             return false;
         }
         self.manager = request_manager_subscribed(&self.tx);
-        self.manager.is_some()
+        if self.manager.is_some() {
+            self.retry_attempt = 0;
+            return true;
+        }
+        self.retry_attempt = self.retry_attempt.saturating_add(1);
+        self.schedule_retry();
+        false
+    }
+
+    /// Schedules one RetryManager message after `retry_delay(retry_attempt)`.
+    /// A no-op while a retry is already pending, so at most one delay thread
+    /// exists at a time. The thread exits after sending its message.
+    fn schedule_retry(&mut self) {
+        if self.retry_pending {
+            return;
+        }
+        let delay = retry_delay(self.retry_attempt);
+        let tx = self.tx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("lucent-media-retry".into())
+            .spawn(move || {
+                std::thread::sleep(delay);
+                let _ = tx.send(Msg::RetryManager);
+            });
+        self.retry_pending = spawned.is_ok();
     }
 
     fn attach_session(&mut self) {
@@ -887,6 +936,27 @@ mod tests {
                 publish: false,
             }
         );
+    }
+
+    #[test]
+    fn retry_delay_first_is_two_seconds() {
+        assert_eq!(retry_delay(0), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn retry_delay_doubles() {
+        assert_eq!(retry_delay(1), Duration::from_secs(4));
+        assert_eq!(retry_delay(2), Duration::from_secs(8));
+        assert_eq!(retry_delay(3), Duration::from_secs(16));
+        assert_eq!(retry_delay(4), Duration::from_secs(32));
+    }
+
+    #[test]
+    fn retry_delay_caps_at_sixty_seconds() {
+        assert_eq!(retry_delay(5), Duration::from_secs(60));
+        assert_eq!(retry_delay(6), Duration::from_secs(60));
+        assert_eq!(retry_delay(1000), Duration::from_secs(60));
+        assert_eq!(retry_delay(u32::MAX), Duration::from_secs(60));
     }
 
     #[test]
