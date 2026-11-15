@@ -24,11 +24,11 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVE
 use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClassNameW, GetForegroundWindow,
-    GetMessageW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, KillTimer,
-    RegisterClassW, SetTimer, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    IsZoomed, KillTimer, RegisterClassW, SetTimer, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
     EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
-    EVENT_SYSTEM_MINIMIZESTART, MSG, OBJID_WINDOW, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT,
-    WM_DISPLAYCHANGE, WM_TIMER, WNDCLASSW, WS_POPUP,
+    EVENT_SYSTEM_MINIMIZESTART, GWL_STYLE, MSG, OBJID_WINDOW, WINDOW_EX_STYLE,
+    WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_POPUP,
 };
 
 use crate::island::{self, Screen};
@@ -75,6 +75,14 @@ pub fn covers(window: RECT, monitor: RECT) -> bool {
         && window.top <= monitor.top
         && window.right >= monitor.right
         && window.bottom >= monitor.bottom
+}
+
+/// Whether a foreground window counts as fullscreen, given its geometry and style.
+/// A maximized window with a caption also covers the monitor when the taskbar
+/// auto-hides, so it does not count. Borderless and captioned-but-not-maximized
+/// covering windows do. Exclusive D3D fullscreen is decided separately.
+pub fn looks_fullscreen(covers: bool, zoomed: bool, has_caption: bool) -> bool {
+    covers && !(zoomed && has_caption)
 }
 
 /// True when the monitor rect matches the screen's position and size.
@@ -305,9 +313,18 @@ unsafe fn foreground_fullscreen_monitor() -> Option<RECT> {
     if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
         return None;
     }
+    let zoomed = unsafe { IsZoomed(hwnd) }.as_bool();
+    // Style bits fit in the low 32 bits.
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32;
+    let has_caption = style & WS_CAPTION.0 == WS_CAPTION.0;
+    let windowed_fullscreen = looks_fullscreen(
+        covers(window, info.rcMonitor),
+        zoomed,
+        has_caption,
+    );
     let exclusive =
         unsafe { SHQueryUserNotificationState() }.ok() == Some(QUNS_RUNNING_D3D_FULL_SCREEN);
-    (covers(window, info.rcMonitor) || exclusive).then_some(info.rcMonitor)
+    (windowed_fullscreen || exclusive).then_some(info.rcMonitor)
 }
 
 /// Visible, not minimised, not cloaked, not ours, and not a shell window.
@@ -445,6 +462,34 @@ mod tests {
         assert!(covers(rect(-8, -8, 1928, 1088), mon));
         assert!(!covers(rect(0, 0, 1920, 1040), mon));
         assert!(!covers(rect(100, 100, 1820, 980), mon));
+    }
+
+    #[test]
+    fn borderless_covering_window_is_fullscreen() {
+        assert!(looks_fullscreen(true, false, false));
+    }
+
+    #[test]
+    fn maximized_captioned_window_is_not_fullscreen() {
+        // Taskbar auto-hide makes a maximized browser cover the whole monitor.
+        assert!(!looks_fullscreen(true, true, true));
+    }
+
+    #[test]
+    fn captioned_covering_window_that_is_not_maximized_is_fullscreen() {
+        assert!(looks_fullscreen(true, false, true));
+    }
+
+    #[test]
+    fn maximized_borderless_covering_window_is_fullscreen() {
+        assert!(looks_fullscreen(true, true, false));
+    }
+
+    #[test]
+    fn non_covering_window_is_not_fullscreen() {
+        assert!(!looks_fullscreen(false, false, false));
+        assert!(!looks_fullscreen(false, true, true));
+        assert!(!looks_fullscreen(false, false, true));
     }
 
     #[test]
